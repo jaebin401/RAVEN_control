@@ -30,3 +30,16 @@ raven_add_socketcan_executable(
     position_control_multi
     apps/position_control_multi.cpp
 )
+
+add_executable(
+    show_xbox_control_data
+    tools/show_xbox_control_data.cpp
+)
+target_compile_options(
+    show_xbox_control_data
+    PRIVATE -Wall -Wextra -Wpedantic
+)
+target_link_libraries(
+    show_xbox_control_data
+    PRIVATE Threads::Threads
+)
