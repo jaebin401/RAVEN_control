@@ -13,62 +13,54 @@
 
 > ⚠️ 미해결 리스크: `RAVEN_sim`의 `raven_description`(URDF)이 링크 길이 등 기구 파라미터의 단일 진실 소스인데, `RAVEN_control`의 닫힌형 IK(Phase D)는 이 값을 별도로 갖게 됨. `config/robot_params.yaml`에 값을 넣을 때 반드시 "출처 URDF 커밋 해시"를 주석으로 남길 것 — 두 레포가 갈라지면서 드리프트할 위험.
 
-## 확정 디렉토리 구조
+## 현재 구현 구조
 
 ```
 RAVEN_control/
 ├── CMakeLists.txt
-├── readme.md
 ├── .gitignore
 ├── docs/
-│   └── decisions/                  # ADR
-├── config/                         # 파라미터 전용 (코드에 하드코딩 금지)
-│   ├── robot_params.yaml           # 링크 길이 등 — URDF 출처 커밋 명시
-│   ├── motor_map.yaml              # CAN ID ↔ 조인트 매핑, gear ratio, zero_sta 값
-│   ├── joint_limits.yaml           # 관절별 min/max 각도, soft margin
-│   └── gains.yaml                  # Kp/Kd 프리셋
+├── config/
+│   └── joint_limits.yaml           # hard/soft limit 및 실측 확인 상태
 ├── include/raven_control/
-│   ├── hal/                        # 하드웨어 추상 계층 — RPi 이식 시 이 폴더만 교체
+│   ├── hal/
 │   │   ├── can_interface.hpp
-│   │   └── motor_driver.hpp        # RS02 프로토콜, 송신 직전 JointLimiter 관문 통과
-│   ├── kinematics/                 # 하드웨어 무관 순수 수학
-│   │   ├── forward_kinematics.hpp
-│   │   └── inverse_kinematics.hpp  # Phase D: MATLAB 닫힌형 해 포팅
-│   ├── dynamics/
-│   │   └── gravity_compensation.hpp # Phase B: inverseDynamics 포팅
-│   ├── control/                    # 전략 패턴 — Phase B/C/D
-│   │   ├── control_mode.hpp
-│   │   ├── gravity_comp_hold.hpp
-│   │   ├── teach_and_replay.hpp
-│   │   └── point_to_point.hpp
-│   ├── sequencing/
-│   │   └── startup_sequence.hpp    # DISABLED → HOMING → READY 상태 머신
-│   ├── safety/
-│   │   ├── joint_limiter.hpp       # clampTarget() / softWallTorque() / isHardViolation()
-│   │   ├── signal_handler.hpp      # SIGINT/SIGTERM → anti-backdrive 정지
-│   │   └── watchdog.hpp
-│   └── logging/
-│       └── trajectory_logger.hpp   # Phase A 로깅 포맷, Teach & Replay 재사용
-├── src/                            # 위 헤더 구현
-├── apps/                           # 데모 진입점 (조립만, 로직 없음)
-│   ├── gravity_comp_hold_demo.cpp
-│   ├── teach_replay_demo.cpp
-│   └── point_to_point_demo.cpp
-├── tools/                          # motor_id_config류 유틸 (CAN_study에서 이식)
-└── tests/                          # kinematics/IK, joint_limiter 단위테스트
+│   │   └── motor_driver.hpp
+│   └── safety/
+│       └── joint_limiter.hpp
+├── src/
+│   ├── hal/
+│   │   ├── can_interface.cpp
+│   │   └── motor_driver.cpp
+│   └── safety/
+│       └── joint_limiter.cpp
+├── apps/
+│   └── debug/
+│       └── position_control_multi.cpp
+├── tools/
+│   ├── motor_id_config.cpp
+│   └── show_xbox_control_data.cpp
+└── tests/
+    ├── joint_limiter_test.cpp
+    └── motor_driver_safety_test.cpp
 ```
 
-## 폴더별 역할
+지금 필요하지 않은 `watchdog`, `signal_handler`, `startup_sequence` 등의
+클래스는 미리 만들지 않는다. 기능이 커져 책임 분리가 실제로 필요해지는 시점에
+추가한다. 이후 Phase B/C/D가 시작되면 `kinematics/`, `dynamics/`,
+`control/`, `sequencing/`, `logging/`을 단계적으로 확장한다.
 
-| 폴더 | 역할 |
+## 현재 파일별 역할
+
+| 파일/폴더 | 역할 |
 |---|---|
-| `config/` | 숫자·파라미터 전용. 코드는 읽기만 함 |
-| `hal/` | 하드웨어에 닿는 유일한 계층. RPi 이식 시 여기만 교체 |
-| `kinematics/` `dynamics/` | 하드웨어 무관 순수 수학, 가장 테스트하기 쉬운 영역 |
-| `control/` | Phase B/C/D가 각각 하나의 전략(strategy). 공통 인터페이스로 교체 가능 |
-| `sequencing/` | 상태 전이 순서만 담당, 제어 로직은 모름 |
-| `safety/` | 어떤 control 모드가 실행되든 무조건 거치는 관문 |
-| `apps/` | 위 조각들을 조립하는 얇은 실행 파일 |
+| `config/joint_limits.yaml` | 조인트별 제한값의 단일 설정 지점. `confirmed: false`이면 enable 금지 |
+| `safety/joint_limiter` | 하드 리밋 판정, 목표값 clamp, soft-wall 토크 계산만 담당하는 순수 로직 |
+| `hal/can_interface` | Linux SocketCAN의 열기·송신·수신만 담당 |
+| `hal/motor_driver` | RS02 프레임 변환, 피드백 관리, enable/stop, 송신 직전 `JointLimiter` 적용 |
+| `apps/debug/position_control_multi` | 키 입력과 화면 표시를 제공하는 검증용 앱. 실제 최종 main이 아님 |
+| `tools/` | 모터 설정·입력 확인용 독립 유지보수 도구 |
+| `tests/` | 하드웨어 없이 limiter와 fail-safe 동작을 검증 |
 
 ## 핵심 설계 결정
 
