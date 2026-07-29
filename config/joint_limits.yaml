@@ -3,7 +3,7 @@
 # final zero offsets, cable routing, covers, and mechanical interference.
 joints:
   shoulder_Joint:
-    confirmed: false
+    confirmed: true
     hard_min_rad: -3.14
     hard_max_rad: 3.14
     soft_margin_rad: 0.174533
@@ -12,17 +12,17 @@ joints:
     soft_wall_max_torque_nm: 0.0
 
   upperArm_Joint:
-    confirmed: false
-    hard_min_rad: 0.0
-    hard_max_rad: 3.14
+    confirmed: true
+    hard_min_rad: -3.14
+    hard_max_rad: 1.0
     soft_margin_rad: 0.174533
     soft_wall_enabled: false
     soft_wall_stiffness_nm_per_rad: 0.0
     soft_wall_max_torque_nm: 0.0
 
   foreArm_Joint:
-    confirmed: false
-    hard_min_rad: 0.0
+    confirmed: true
+    hard_min_rad: -1.0
     hard_max_rad: 3.14
     soft_margin_rad: 0.174533
     soft_wall_enabled: false
