@@ -38,16 +38,17 @@ constexpr std::array<JointSpec, 3> JOINTS{{
     {"foreArm_Joint"},
 }};
 
-// upperArm and foreArm deliberately use opposite signs in both poses.
+// Edit these values in degrees. upperArm and foreArm deliberately use
+// opposite signs in both poses.
 constexpr std::array<double, 3> POSE_A_OFFSET_DEG{
-    5.0,
-    -4.0,
-    6.0,
+    10.0,
+    -8.0,
+    12.0,
 };
 constexpr std::array<double, 3> POSE_B_OFFSET_DEG{
-    -5.0,
-    4.0,
-    -6.0,
+    -10.0,
+    8.0,
+    -12.0,
 };
 constexpr std::array<double, 3> HOME_OFFSET_DEG{
     0.0,
@@ -534,6 +535,58 @@ bool holdPose(
         POSE_HOLD_DURATION);
 }
 
+bool holdHomeUntilDisabled(
+    raven_control::hal::MotorDriver& driver,
+    const raven_control::config::MotorRuntimeConfig& config,
+    const JointBindings& bindings,
+    const JointPositions& home)
+{
+    std::cout
+        << "\nReturned to the start pose.\n"
+        << "The motors remain enabled and hold this pose.\n"
+        << "SPACE: disable all motors and exit\n"
+        << "Q: emergency stop and exit\n"
+        << std::flush;
+
+    auto next_cycle = std::chrono::steady_clock::now();
+    auto next_request = next_cycle;
+    auto next_status = next_cycle;
+
+    while (!stop_requested) {
+        const auto now = std::chrono::steady_clock::now();
+        if (keyAvailable()) {
+            const std::optional<char> key = readKey();
+            if (key &&
+                (*key == ' ' || *key == 'q' || *key == 'Q')) {
+                return true;
+            }
+        }
+
+        if (now >= next_request) {
+            if (!driver.requestMechanicalPositions()) {
+                throw std::runtime_error(
+                    "Failed to request position feedback");
+            }
+            do {
+                next_request += config.position_request_period;
+            } while (next_request <= now);
+        }
+        (void)driver.poll();
+        if (driver.faultLatched())
+            throw std::runtime_error(driver.faultReason());
+
+        sendTargets(driver, bindings, home);
+        if (now >= next_status) {
+            printStatus("Home Hold", driver, home);
+            next_status = now + std::chrono::milliseconds(200);
+        }
+
+        next_cycle += config.control_period;
+        std::this_thread::sleep_until(next_cycle);
+    }
+    return false;
+}
+
 }  // namespace
 
 int main(int argc, char* argv[])
@@ -617,6 +670,14 @@ int main(int argc, char* argv[])
             }
             segment_start = pose.target_rad;
         }
+        if (completed) {
+            sendTargets(driver, bindings, home);
+            (void)holdHomeUntilDisabled(
+                driver,
+                motor_config,
+                bindings,
+                home);
+        }
 
         const bool stopped = driver.stopAll();
         stop_guard.release();
@@ -631,7 +692,7 @@ int main(int argc, char* argv[])
             return 0;
         }
 
-        std::cout << "Demo complete: returned to the start pose and stopped\n";
+        std::cout << "Motors disabled by user\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "\nFatal error: " << error.what() << '\n';
