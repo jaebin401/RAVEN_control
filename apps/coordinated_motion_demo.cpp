@@ -45,9 +45,9 @@ constexpr std::array<JointSpec, 3> JOINTS{{
 // Edit these values in degrees. upperArm and foreArm deliberately use
 // opposite signs in both poses.
 constexpr std::array<double, 3> POSE_A_OFFSET_DEG{
-    10.0,
-    -8.0,
-    12.0,
+    50.0,
+    -40.0,
+    30.0,
 };
 constexpr std::array<double, 3> POSE_B_OFFSET_DEG{
     -10.0,
