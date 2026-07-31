@@ -46,6 +46,7 @@ RAVEN_control/
 │       └── position_control_multi.cpp
 ├── tools/
 │   ├── motor_id_config.cpp
+│   ├── motor_gain_tuner.cpp
 │   └── show_xbox_control_data.cpp
 └── tests/
     ├── joint_limiter_test.cpp

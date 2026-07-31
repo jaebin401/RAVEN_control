@@ -39,4 +39,8 @@ struct MotorRuntimeConfig {
 [[nodiscard]] MotorRuntimeConfig loadMotorRuntimeConfig(
     const std::string& yaml_path);
 
+void saveMotorRuntimeConfig(
+    const MotorRuntimeConfig& config,
+    const std::string& yaml_path);
+
 }  // namespace raven_control::config

@@ -2,7 +2,11 @@
 
 #include "raven_control/hal/motor_driver.hpp"
 
+#include <cerrno>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -265,6 +269,102 @@ MotorRuntimeConfig loadMotorRuntimeConfig(
     config.validate();
     return config;
 #else
+    (void)yaml_path;
+    throw std::runtime_error(
+        "RAVEN_control was built without yaml-cpp support");
+#endif
+}
+
+void saveMotorRuntimeConfig(
+    const MotorRuntimeConfig& config,
+    const std::string& yaml_path)
+{
+#if RAVEN_HAS_YAML_CPP
+    config.validate();
+
+    YAML::Emitter output;
+    output << YAML::BeginMap;
+    output << YAML::Key << "runtime" << YAML::Value
+           << YAML::BeginMap;
+    output << YAML::Key << "control_period_ms" << YAML::Value
+           << config.control_period.count();
+    output << YAML::Key << "feedback_timeout_ms" << YAML::Value
+           << config.feedback_timeout.count();
+    output << YAML::Key << "position_request_period_ms"
+           << YAML::Value
+           << config.position_request_period.count();
+    output << YAML::EndMap;
+
+    output << YAML::Key << "joints" << YAML::Value
+           << YAML::BeginMap;
+    for (const auto& joint : config.joints) {
+        output << YAML::Key << joint.joint_name << YAML::Value
+               << YAML::BeginMap;
+        output << YAML::Key << "motor_id" << YAML::Value
+               << static_cast<int>(joint.motor_id);
+
+        output << YAML::Key << "calibration" << YAML::Value
+               << YAML::BeginMap;
+        output << YAML::Key << "position_sign" << YAML::Value
+               << joint.position_sign;
+        output << YAML::Key << "joint_zero_at_motor_rad"
+               << YAML::Value << joint.joint_zero_at_motor_rad;
+        output << YAML::Key << "joint_to_motor_ratio"
+               << YAML::Value << joint.joint_to_motor_ratio;
+        output << YAML::EndMap;
+
+        output << YAML::Key << "position_control" << YAML::Value
+               << YAML::BeginMap;
+        output << YAML::Key << "kp" << YAML::Value
+               << joint.position_control.kp;
+        output << YAML::Key << "kd" << YAML::Value
+               << joint.position_control.kd;
+        output << YAML::Key << "max_slew_rate_rad_s"
+               << YAML::Value
+               << joint.position_control.max_slew_rate_rad_s;
+        output << YAML::EndMap;
+        output << YAML::EndMap;
+    }
+    output << YAML::EndMap;
+    output << YAML::EndMap;
+
+    if (!output.good()) {
+        throw std::runtime_error(
+            "Cannot serialize motor config: " +
+            output.GetLastError());
+    }
+
+    const std::string temporary_path = yaml_path + ".tmp";
+    {
+        std::ofstream file(
+            temporary_path,
+            std::ios::binary | std::ios::trunc);
+        if (!file) {
+            throw std::runtime_error(
+                "Cannot open temporary motor config file '" +
+                temporary_path + "'");
+        }
+        file << output.c_str() << '\n';
+        file.close();
+        if (!file) {
+            std::remove(temporary_path.c_str());
+            throw std::runtime_error(
+                "Cannot write temporary motor config file '" +
+                temporary_path + "'");
+        }
+    }
+
+    if (std::rename(
+            temporary_path.c_str(),
+            yaml_path.c_str()) != 0) {
+        const std::string reason = std::strerror(errno);
+        std::remove(temporary_path.c_str());
+        throw std::runtime_error(
+            "Cannot replace motor config file '" + yaml_path +
+            "': " + reason);
+    }
+#else
+    (void)config;
     (void)yaml_path;
     throw std::runtime_error(
         "RAVEN_control was built without yaml-cpp support");

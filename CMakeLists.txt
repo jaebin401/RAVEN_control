@@ -146,6 +146,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
 
     add_executable(
+        motor_gain_tuner
+        tools/motor_gain_tuner.cpp
+    )
+    target_link_libraries(motor_gain_tuner PRIVATE raven_hal)
+    raven_enable_warnings(motor_gain_tuner)
+
+    add_executable(
         position_control_multi
         apps/debug/position_control_multi.cpp
     )
