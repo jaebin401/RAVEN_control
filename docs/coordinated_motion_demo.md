@@ -25,6 +25,10 @@ Start → Pose A → Pose B → Start
 각 전환은 4초 동안 quintic smoothstep으로 보간하고, 자세마다 0.75초
 유지한다. 목표점은 실행 시 읽은 시작 자세에 대한 상대각이다.
 
+이동 구간에서는 quintic smoothstep의 해석적 미분으로 목표 속도를 함께
+계산해 RS02 operation-control(MIT) 명령에 전송한다. 시작점과 끝점의 목표
+속도는 0이며, 자세 유지 구간과 Home Hold에서도 0을 전송한다.
+
 실행 전 다음 조건을 모두 검사한다.
 
 - 세 관절의 limit가 `confirmed: true`인지
@@ -68,6 +72,9 @@ CSV에는 다음 값이 포함된다.
 - 관절별 command/encoder position과 trajectory/전송/encoder velocity
 - position error와 P·D·feedforward·총 제어토크 추정값
 - feedback timestamp 기준 age와 validity
+
+`trajectory_velocity_rad_s`와 `sent_velocity_rad_s`에는 실제 MIT 패킷에
+사용한 목표 속도가 기록된다. 현재 feedforward torque는 0이다.
 
 현재 기본 `position_request_period_ms: 100`에서는 엔코더가 10Hz로만
 갱신된다. 물리적 끊김과 피드백 샘플링을 구분하는 진단 실행에서는 다음

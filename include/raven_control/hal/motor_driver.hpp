@@ -67,9 +67,10 @@ public:
     [[nodiscard]] bool requestMechanicalPositions();
     std::size_t poll();
 
-    [[nodiscard]] MotorCommandResult sendPositionCommand(
+    [[nodiscard]] MotorCommandResult sendMitCommand(
         const std::string& joint_name,
         double target_position_rad,
+        double target_velocity_rad_s,
         double kp,
         double kd);
 
@@ -96,9 +97,10 @@ private:
     [[nodiscard]] bool sendStop(std::uint8_t motor_id);
     [[nodiscard]] bool sendReadMechanicalPosition(
         std::uint8_t motor_id);
-    [[nodiscard]] bool sendPositionFrame(
+    [[nodiscard]] bool sendMitFrame(
         std::uint8_t motor_id,
         double position_rad,
+        double velocity_rad_s,
         double kp,
         double kd);
     [[nodiscard]] bool stopAllUnlocked();

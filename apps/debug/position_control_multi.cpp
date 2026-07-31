@@ -260,6 +260,9 @@ void controlLoop(
     auto next_cycle = std::chrono::steady_clock::now();
     auto next_position_request = next_cycle;
     auto next_status = next_cycle;
+    const double control_period_seconds =
+        std::chrono::duration<double>(
+            motor_config.control_period).count();
 
     while (running.load() && !stop_requested) {
         next_cycle += motor_config.control_period;
@@ -293,19 +296,21 @@ void controlLoop(
                 const double difference = target - current;
                 const double max_step_rad =
                     states[index].max_slew_rate_rad_s *
-                    std::chrono::duration<double>(
-                        motor_config.control_period).count();
+                    control_period_seconds;
                 const double next =
                     std::abs(difference) <= max_step_rad
                     ? target
                     : current + std::copysign(
                           max_step_rad,
                           difference);
+                const double target_velocity_rad_s =
+                    (next - current) / control_period_seconds;
                 states[index].setpoint_rad.store(next);
 
-                const auto result = driver.sendPositionCommand(
+                const auto result = driver.sendMitCommand(
                     JOINTS[index].name,
                     next,
+                    target_velocity_rad_s,
                     states[index].kp.load(),
                     states[index].kd.load());
                 if (result !=

@@ -1,8 +1,9 @@
 # RS02 Motor Gain Tuner
 
 `motor_gain_tuner`는 별도 그래픽 환경 없이 터미널 전체 화면에서 조인트별
-Kp/Kd를 조정하는 디버그 도구다. 모든 position command는 기존
-`MotorDriver`와 `JointLimiter`를 통과한다.
+Kp/Kd를 조정하는 디버그 도구다. 모든 MIT command는 기존
+`MotorDriver`와 `JointLimiter`를 통과한다. 목표각을 slew-rate로 이동하는
+동안에는 setpoint 변화량으로 계산한 목표 속도도 함께 전송한다.
 
 ## Build and run
 
@@ -40,6 +41,7 @@ cmake --build build --target motor_gain_tuner -j"$(nproc)"
 - hard-limit 위반, stale feedback, CAN 오류, 범위를 벗어난 gain은 전체
   모터 stop과 latched fault를 발생시킨다.
 - 목표각은 joint soft limit에서 clamp된다.
+- soft limit에서 목표각이 clamp되면 바깥쪽 목표 속도는 0으로 전송된다.
 - gain 조정은 실행 중 즉시 적용되지만 `V`를 누르기 전에는 파일에 저장되지
   않는다.
 - 저 gain에서도 중력으로 링크가 떨어질 수 있으므로 튜닝 중에는 기구를

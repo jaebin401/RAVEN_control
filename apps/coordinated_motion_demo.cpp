@@ -79,10 +79,6 @@ struct PlannedPose {
 
 struct DiagnosticState {
     std::uint64_t cycle_index = 0;
-    std::optional<std::chrono::steady_clock::time_point>
-        previous_cycle_at;
-    JointPositions previous_command{};
-    std::array<bool, JOINTS.size()> command_initialized{};
     JointPositions previous_feedback{};
     std::array<std::chrono::steady_clock::time_point, JOINTS.size()>
         previous_feedback_at{};
@@ -113,6 +109,14 @@ double quinticSmoothstep(double u)
     const double u2 = clamped * clamped;
     const double u3 = u2 * clamped;
     return u3 * (10.0 + clamped * (-15.0 + 6.0 * clamped));
+}
+
+double quinticSmoothstepDerivative(double u)
+{
+    const double clamped = std::clamp(u, 0.0, 1.0);
+    const double one_minus_u = 1.0 - clamped;
+    return 30.0 * clamped * clamped *
+           one_minus_u * one_minus_u;
 }
 
 class TerminalMode {
@@ -467,18 +471,20 @@ void printStatus(
 void sendTargets(
     raven_control::hal::MotorDriver& driver,
     const JointBindings& bindings,
-    const JointPositions& target)
+    const JointPositions& target,
+    const JointPositions& target_velocity)
 {
     for (std::size_t index = 0; index < JOINTS.size(); ++index) {
-        const auto result = driver.sendPositionCommand(
+        const auto result = driver.sendMitCommand(
             JOINTS[index].name,
             target[index],
+            target_velocity[index],
             bindings[index]->position_control.kp,
             bindings[index]->position_control.kd);
         if (result !=
             raven_control::hal::MotorCommandResult::Sent) {
             throw std::runtime_error(
-                "Position command failed on '" +
+                "MIT command failed on '" +
                 std::string(JOINTS[index].name) +
                 "': " + raven_control::hal::toString(result));
         }
@@ -494,13 +500,10 @@ void recordDiagnosticSample(
     const raven_control::config::MotorRuntimeConfig& config,
     const JointBindings& bindings,
     raven_control::hal::MotorDriver& driver,
-    const JointPositions& target)
+    const JointPositions& target,
+    const JointPositions& target_velocity)
 {
     const auto observed_at = std::chrono::steady_clock::now();
-    const double command_dt_seconds = state.previous_cycle_at
-        ? std::chrono::duration<double>(
-              cycle_started_at - *state.previous_cycle_at).count()
-        : 0.0;
 
     raven_control::logging::MotionSample sample;
     sample.cycle_index = state.cycle_index++;
@@ -515,12 +518,8 @@ void recordDiagnosticSample(
         raven_control::logging::JointMotionSample joint_sample;
         joint_sample.command_position_rad = target[index];
         joint_sample.trajectory_velocity_rad_s =
-            state.command_initialized[index] &&
-                command_dt_seconds > 0.0
-            ? (target[index] - state.previous_command[index]) /
-                  command_dt_seconds
-            : 0.0;
-        joint_sample.sent_velocity_rad_s = 0.0;
+            target_velocity[index];
+        joint_sample.sent_velocity_rad_s = target_velocity[index];
         joint_sample.sent_feedforward_torque_nm = 0.0;
         joint_sample.kp = bindings[index]->position_control.kp;
         joint_sample.kd = bindings[index]->position_control.kd;
@@ -564,7 +563,6 @@ void recordDiagnosticSample(
                 target[index] - feedback->position_rad;
             joint_sample.estimated_p_torque_nm =
                 joint_sample.kp * joint_sample.position_error_rad;
-            // MotorDriver currently sends desired velocity = 0.
             joint_sample.estimated_d_torque_nm =
                 joint_sample.kd *
                 (joint_sample.sent_velocity_rad_s -
@@ -583,12 +581,9 @@ void recordDiagnosticSample(
             joint_sample.feedback_age_ms = nan;
         }
 
-        state.previous_command[index] = target[index];
-        state.command_initialized[index] = true;
         sample.joints[index] = joint_sample;
     }
 
-    state.previous_cycle_at = cycle_started_at;
     logger.record(std::move(sample));
 }
 
@@ -633,13 +628,18 @@ bool runPhase(
             std::chrono::duration<double>(now - phase_start).count() /
             std::chrono::duration<double>(duration).count();
         const double blend = quinticSmoothstep(u);
+        const double blend_rate =
+            quinticSmoothstepDerivative(u) /
+            std::chrono::duration<double>(duration).count();
         JointPositions target{};
+        JointPositions target_velocity{};
         for (std::size_t index = 0; index < JOINTS.size(); ++index) {
+            const double displacement = goal[index] - start[index];
             target[index] =
-                start[index] +
-                blend * (goal[index] - start[index]);
+                start[index] + blend * displacement;
+            target_velocity[index] = blend_rate * displacement;
         }
-        sendTargets(driver, bindings, target);
+        sendTargets(driver, bindings, target, target_velocity);
         recordDiagnosticSample(
             logger,
             diagnostic_state,
@@ -649,7 +649,8 @@ bool runPhase(
             config,
             bindings,
             driver,
-            target);
+            target,
+            target_velocity);
 
         if (now >= next_status) {
             printStatus(phase_name, driver, target);
@@ -701,6 +702,7 @@ bool holdHomeUntilDisabled(
     auto next_cycle = std::chrono::steady_clock::now();
     auto next_request = next_cycle;
     auto next_status = next_cycle;
+    const JointPositions zero_velocity{};
 
     while (!stop_requested) {
         const auto now = std::chrono::steady_clock::now();
@@ -725,7 +727,7 @@ bool holdHomeUntilDisabled(
         if (driver.faultLatched())
             throw std::runtime_error(driver.faultReason());
 
-        sendTargets(driver, bindings, home);
+        sendTargets(driver, bindings, home, zero_velocity);
         recordDiagnosticSample(
             logger,
             diagnostic_state,
@@ -735,7 +737,8 @@ bool holdHomeUntilDisabled(
             config,
             bindings,
             driver,
-            home);
+            home,
+            zero_velocity);
         if (now >= next_status) {
             printStatus("Home Hold", driver, home);
             next_status = now + std::chrono::milliseconds(200);
@@ -849,7 +852,8 @@ int main(int argc, char* argv[])
             segment_start = pose.target_rad;
         }
         if (completed) {
-            sendTargets(driver, bindings, home);
+            const JointPositions zero_velocity{};
+            sendTargets(driver, bindings, home, zero_velocity);
             (void)holdHomeUntilDisabled(
                 driver,
                 motor_config,

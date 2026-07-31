@@ -444,6 +444,9 @@ int main(int argc, char* argv[])
         auto next_cycle = std::chrono::steady_clock::now();
         auto next_position_request = next_cycle;
         auto next_render = next_cycle;
+        const double control_period_seconds =
+            std::chrono::duration<double>(
+                motor_config.control_period).count();
 
         try {
             while (running && !stop_requested) {
@@ -581,20 +584,26 @@ int main(int argc, char* argv[])
                             states[index].setpoint_rad;
                         const double max_step =
                             states[index].max_slew_rate_rad_s *
-                            std::chrono::duration<double>(
-                                motor_config.control_period).count();
-                        states[index].setpoint_rad =
+                            control_period_seconds;
+                        const double current_setpoint =
+                            states[index].setpoint_rad;
+                        const double next_setpoint =
                             std::abs(difference) <= max_step
                             ? states[index].target_rad
-                            : states[index].setpoint_rad +
+                            : current_setpoint +
                                   std::copysign(
                                       max_step,
                                       difference);
+                        const double target_velocity_rad_s =
+                            (next_setpoint - current_setpoint) /
+                            control_period_seconds;
+                        states[index].setpoint_rad = next_setpoint;
 
                         const auto result =
-                            driver.sendPositionCommand(
+                            driver.sendMitCommand(
                                 JOINTS[index].name,
                                 states[index].setpoint_rad,
+                                target_velocity_rad_s,
                                 states[index].kp,
                                 states[index].kd);
                         if (result ==
@@ -607,7 +616,7 @@ int main(int argc, char* argv[])
                             raven_control::hal::
                                 MotorCommandResult::Sent) {
                             throw std::runtime_error(
-                                "Position command failed: " +
+                                "MIT command failed: " +
                                 std::string(
                                     raven_control::hal::
                                         toString(result)));

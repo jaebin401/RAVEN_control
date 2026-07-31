@@ -18,7 +18,6 @@ constexpr std::uint16_t PARAM_MECHANICAL_POSITION = 0x7019;
 
 constexpr double PI = 3.14159265358979323846;
 constexpr double POSITION_SCALE_RAD = 4.0 * PI;
-constexpr std::uint16_t ZERO_VELOCITY_U16 = 0x7FFF;
 constexpr std::uint16_t ZERO_TORQUE_U16 = 0x7FFF;
 
 std::uint32_t buildExtendedId(
@@ -108,6 +107,15 @@ double jointToMotorPosition(
            static_cast<double>(motor.position_sign) *
                motor.joint_to_motor_ratio *
                joint_position_rad;
+}
+
+double jointToMotorVelocity(
+    const JointMotorConfig& motor,
+    double joint_velocity_rad_s)
+{
+    return static_cast<double>(motor.position_sign) *
+           motor.joint_to_motor_ratio *
+           joint_velocity_rad_s;
 }
 
 }  // namespace
@@ -294,9 +302,10 @@ std::size_t MotorDriver::poll()
     return processed;
 }
 
-MotorCommandResult MotorDriver::sendPositionCommand(
+MotorCommandResult MotorDriver::sendMitCommand(
     const std::string& joint_name,
     double target_position_rad,
+    double target_velocity_rad_s,
     double kp,
     double kd)
 {
@@ -312,10 +321,10 @@ MotorCommandResult MotorDriver::sendPositionCommand(
     Channel& channel = channel_entry->second;
 
     if (!std::isfinite(target_position_rad) ||
+        !std::isfinite(target_velocity_rad_s) ||
         !std::isfinite(kp) ||
         !std::isfinite(kd)) {
-        latchFaultUnlocked(
-            "Non-finite position command on " + joint_name);
+        latchFaultUnlocked("Non-finite MIT command on " + joint_name);
         return MotorCommandResult::InvalidCommand;
     }
     if (kp < 0.0 || kp > RS02_OPERATION_MAX_KP ||
@@ -350,13 +359,26 @@ MotorCommandResult MotorDriver::sendPositionCommand(
             "Cannot limit invalid target on " + joint_name);
         return MotorCommandResult::InvalidCommand;
     }
-    if (!sendPositionFrame(
+    const double safe_joint_velocity =
+        *safe_target == target_position_rad
+        ? target_velocity_rad_s
+        : 0.0;
+    const double motor_velocity = jointToMotorVelocity(
+        channel.motor,
+        safe_joint_velocity);
+    if (std::abs(motor_velocity) >
+        RS02_OPERATION_MAX_VELOCITY_RAD_S) {
+        latchFaultUnlocked(
+            "Out-of-range MIT velocity on " + joint_name);
+        return MotorCommandResult::InvalidCommand;
+    }
+    if (!sendMitFrame(
             channel.motor.motor_id,
             jointToMotorPosition(channel.motor, *safe_target),
+            motor_velocity,
             kp,
             kd)) {
-        latchFaultUnlocked(
-            "CAN position command failed on " + joint_name);
+        latchFaultUnlocked("CAN MIT command failed on " + joint_name);
         return MotorCommandResult::CanWriteFailure;
     }
 
@@ -452,9 +474,10 @@ bool MotorDriver::sendReadMechanicalPosition(
     return transport_.send(frame);
 }
 
-bool MotorDriver::sendPositionFrame(
+bool MotorDriver::sendMitFrame(
     std::uint8_t motor_id,
     double position_rad,
+    double velocity_rad_s,
     double kp,
     double kd)
 {
@@ -472,7 +495,9 @@ bool MotorDriver::sendPositionFrame(
     packU16BigEndian(
         frame.data,
         2,
-        ZERO_VELOCITY_U16);
+        encodeSymmetric(
+            velocity_rad_s,
+            RS02_OPERATION_MAX_VELOCITY_RAD_S));
     packU16BigEndian(
         frame.data,
         4,
