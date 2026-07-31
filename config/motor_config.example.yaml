@@ -1,0 +1,46 @@
+# Safe starting values for an RS02 in private operation-control mode.
+# Copy this file to motor_config.yaml and tune the local copy.
+runtime:
+  control_period_ms: 20
+  feedback_timeout_ms: 250
+  position_request_period_ms: 100
+
+joints:
+  shoulder_Joint:
+    motor_id: 1
+    calibration:
+      # q_joint = position_sign
+      #           * (mechPos - joint_zero_at_motor_rad)
+      #           / joint_to_motor_ratio
+      position_sign: 1
+      joint_zero_at_motor_rad: 0.0
+      # mechPos is the RS02 load-side angle. Keep this at 1.0 for a
+      # directly mounted joint; use only an additional external ratio here.
+      joint_to_motor_ratio: 1.0
+    position_control:
+      # These are the actual RS02 Type 1 gain values, not encoded integers.
+      kp: 8.0
+      kd: 0.15
+      max_slew_rate_rad_s: 0.524
+
+  upperArm_Joint:
+    motor_id: 2
+    calibration:
+      position_sign: 1
+      joint_zero_at_motor_rad: 0.0
+      joint_to_motor_ratio: 1.0
+    position_control:
+      kp: 8.0
+      kd: 0.15
+      max_slew_rate_rad_s: 0.524
+
+  foreArm_Joint:
+    motor_id: 3
+    calibration:
+      position_sign: 1
+      joint_zero_at_motor_rad: 0.0
+      joint_to_motor_ratio: 1.0
+    position_control:
+      kp: 8.0
+      kd: 0.15
+      max_slew_rate_rad_s: 0.524

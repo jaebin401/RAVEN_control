@@ -9,6 +9,24 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(Threads REQUIRED)
 find_package(yaml-cpp QUIET)
 
+set(RAVEN_HAS_YAML_CPP 0)
+set(RAVEN_YAML_CPP_TARGET "")
+if(TARGET yaml-cpp::yaml-cpp)
+    set(RAVEN_HAS_YAML_CPP 1)
+    set(RAVEN_YAML_CPP_TARGET yaml-cpp::yaml-cpp)
+elseif(TARGET yaml-cpp)
+    set(RAVEN_HAS_YAML_CPP 1)
+    set(RAVEN_YAML_CPP_TARGET yaml-cpp)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR
+        "yaml-cpp is required for RAVEN_control on Linux. "
+        "Install libyaml-cpp-dev and configure again.")
+else()
+    message(WARNING
+        "yaml-cpp was not found. Pure configuration validation and "
+        "safety tests can build, but loading YAML is unavailable.")
+endif()
+
 function(raven_enable_warnings target)
     target_compile_options(
         ${target}
@@ -26,29 +44,21 @@ target_include_directories(
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 raven_enable_warnings(raven_safety)
-
-if(TARGET yaml-cpp::yaml-cpp)
-    target_link_libraries(raven_safety PUBLIC yaml-cpp::yaml-cpp)
-    target_compile_definitions(raven_safety PRIVATE RAVEN_HAS_YAML_CPP=1)
-elseif(TARGET yaml-cpp)
-    target_link_libraries(raven_safety PUBLIC yaml-cpp)
-    target_compile_definitions(raven_safety PRIVATE RAVEN_HAS_YAML_CPP=1)
-else()
-    target_compile_definitions(raven_safety PRIVATE RAVEN_HAS_YAML_CPP=0)
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        message(FATAL_ERROR
-            "yaml-cpp is required for RAVEN_control on Linux. "
-            "Install libyaml-cpp-dev and configure again.")
-    else()
-        message(WARNING
-            "yaml-cpp was not found. Pure safety tests can build, but "
-            "loading config/joint_limits.yaml is unavailable.")
-    endif()
+target_compile_definitions(
+    raven_safety
+    PRIVATE RAVEN_HAS_YAML_CPP=${RAVEN_HAS_YAML_CPP}
+)
+if(RAVEN_YAML_CPP_TARGET)
+    target_link_libraries(
+        raven_safety
+        PUBLIC ${RAVEN_YAML_CPP_TARGET}
+    )
 endif()
 
 add_library(
     raven_hal
     STATIC
+    src/config/motor_config.cpp
     src/hal/motor_driver.cpp
 )
 target_include_directories(
@@ -60,12 +70,35 @@ target_link_libraries(
     PUBLIC raven_safety Threads::Threads
 )
 raven_enable_warnings(raven_hal)
+target_compile_definitions(
+    raven_hal
+    PRIVATE RAVEN_HAS_YAML_CPP=${RAVEN_HAS_YAML_CPP}
+)
 
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/config")
-configure_file(
-    config/joint_limits.yaml
-    config/joint_limits.yaml
-    COPYONLY
+
+function(raven_copy_runtime_config local_name example_name)
+    set(local_path "${CMAKE_CURRENT_SOURCE_DIR}/config/${local_name}")
+    if(EXISTS "${local_path}")
+        set(source_path "${local_path}")
+    else()
+        set(source_path
+            "${CMAKE_CURRENT_SOURCE_DIR}/config/${example_name}")
+    endif()
+    configure_file(
+        "${source_path}"
+        "${CMAKE_CURRENT_BINARY_DIR}/config/${local_name}"
+        COPYONLY
+    )
+endfunction()
+
+raven_copy_runtime_config(
+    joint_limits.yaml
+    joint_limits.example.yaml
+)
+raven_copy_runtime_config(
+    motor_config.yaml
+    motor_config.example.yaml
 )
 
 include(CTest)
@@ -88,6 +121,14 @@ if(BUILD_TESTING)
         NAME motor_driver_safety_test
         COMMAND motor_driver_safety_test
     )
+
+    add_executable(
+        motor_config_test
+        tests/motor_config_test.cpp
+    )
+    target_link_libraries(motor_config_test PRIVATE raven_hal)
+    raven_enable_warnings(motor_config_test)
+    add_test(NAME motor_config_test COMMAND motor_config_test)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

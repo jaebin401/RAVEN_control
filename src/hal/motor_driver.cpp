@@ -18,8 +18,6 @@ constexpr std::uint16_t PARAM_MECHANICAL_POSITION = 0x7019;
 
 constexpr double PI = 3.14159265358979323846;
 constexpr double POSITION_SCALE_RAD = 4.0 * PI;
-constexpr double KP_SCALE = 5000.0;
-constexpr double KD_SCALE = 100.0;
 constexpr std::uint16_t ZERO_VELOCITY_U16 = 0x7FFF;
 constexpr std::uint16_t ZERO_TORQUE_U16 = 0x7FFF;
 
@@ -82,7 +80,7 @@ std::uint16_t encodeSymmetric(
     const double clamped =
         std::clamp(value, -absolute_limit, absolute_limit);
     const double normalized =
-        ((clamped / absolute_limit) + 1.0) * 32767.0;
+        ((clamped / absolute_limit) + 1.0) * 32767.5;
     return static_cast<std::uint16_t>(normalized);
 }
 
@@ -91,6 +89,25 @@ std::uint16_t encodeUnsigned(double value, double maximum)
     const double clamped = std::clamp(value, 0.0, maximum);
     const double normalized = (clamped / maximum) * 65535.0;
     return static_cast<std::uint16_t>(normalized);
+}
+
+double motorToJointPosition(
+    const JointMotorConfig& motor,
+    double motor_position_rad)
+{
+    return static_cast<double>(motor.position_sign) *
+           (motor_position_rad - motor.joint_zero_at_motor_rad) /
+           motor.joint_to_motor_ratio;
+}
+
+double jointToMotorPosition(
+    const JointMotorConfig& motor,
+    double joint_position_rad)
+{
+    return motor.joint_zero_at_motor_rad +
+           static_cast<double>(motor.position_sign) *
+               motor.joint_to_motor_ratio *
+               joint_position_rad;
 }
 
 }  // namespace
@@ -144,6 +161,23 @@ MotorDriver::MotorDriver(
     for (auto& motor : motor_map) {
         if (motor.joint_name.empty())
             throw std::invalid_argument("Motor map contains an empty joint name");
+        if (motor.motor_id > 127) {
+            throw std::invalid_argument(
+                "Motor ID must be in range 0..127");
+        }
+        if (motor.position_sign != -1 &&
+            motor.position_sign != 1) {
+            throw std::invalid_argument(
+                "Position sign must be -1 or 1 for '" +
+                motor.joint_name + "'");
+        }
+        if (!std::isfinite(motor.joint_zero_at_motor_rad) ||
+            !std::isfinite(motor.joint_to_motor_ratio) ||
+            motor.joint_to_motor_ratio <= 0.0) {
+            throw std::invalid_argument(
+                "Invalid position calibration for '" +
+                motor.joint_name + "'");
+        }
 
         auto limiter = joint_limiters.find(motor.joint_name);
         if (limiter == joint_limiters.end()) {
@@ -158,6 +192,19 @@ MotorDriver::MotorDriver(
             throw std::invalid_argument(
                 "Duplicate motor ID in motor map: " +
                 std::to_string(motor.motor_id));
+        }
+        const double motor_at_hard_min = jointToMotorPosition(
+            motor,
+            limiter->second.config().hard_min_rad);
+        const double motor_at_hard_max = jointToMotorPosition(
+            motor,
+            limiter->second.config().hard_max_rad);
+        if (std::abs(motor_at_hard_min) > POSITION_SCALE_RAD ||
+            std::abs(motor_at_hard_max) > POSITION_SCALE_RAD) {
+            throw std::invalid_argument(
+                "Joint limits and calibration exceed the RS02 "
+                "operation-control position range for '" +
+                motor.joint_name + "'");
         }
 
         const std::string joint_name = motor.joint_name;
@@ -271,6 +318,12 @@ MotorCommandResult MotorDriver::sendPositionCommand(
             "Non-finite position command on " + joint_name);
         return MotorCommandResult::InvalidCommand;
     }
+    if (kp < 0.0 || kp > RS02_OPERATION_MAX_KP ||
+        kd < 0.0 || kd > RS02_OPERATION_MAX_KD) {
+        latchFaultUnlocked(
+            "Out-of-range position gain on " + joint_name);
+        return MotorCommandResult::InvalidCommand;
+    }
     if (!channel.feedback.valid) {
         latchFaultUnlocked(
             "Missing position feedback on " + joint_name);
@@ -299,7 +352,7 @@ MotorCommandResult MotorDriver::sendPositionCommand(
     }
     if (!sendPositionFrame(
             channel.motor.motor_id,
-            *safe_target,
+            jointToMotorPosition(channel.motor, *safe_target),
             kp,
             kd)) {
         latchFaultUnlocked(
@@ -423,11 +476,11 @@ bool MotorDriver::sendPositionFrame(
     packU16BigEndian(
         frame.data,
         4,
-        encodeUnsigned(kp, KP_SCALE));
+        encodeUnsigned(kp, RS02_OPERATION_MAX_KP));
     packU16BigEndian(
         frame.data,
         6,
-        encodeUnsigned(kd, KD_SCALE));
+        encodeUnsigned(kd, RS02_OPERATION_MAX_KD));
     return transport_.send(frame);
 }
 
@@ -472,7 +525,9 @@ void MotorDriver::processFrameUnlocked(const CanFrame& frame)
 
     Channel& channel = channels_.at(joint->second);
     channel.feedback.position_rad =
-        unpackFloatLittleEndian(frame.data, 4);
+        motorToJointPosition(
+            channel.motor,
+            unpackFloatLittleEndian(frame.data, 4));
     channel.feedback.valid = true;
     channel.feedback.received_at =
         std::chrono::steady_clock::now();

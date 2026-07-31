@@ -21,14 +21,21 @@ RAVEN_control/
 ├── .gitignore
 ├── docs/
 ├── config/
-│   └── joint_limits.yaml           # hard/soft limit 및 실측 확인 상태
+│   ├── joint_limits.example.yaml   # Git에 남기는 안전한 템플릿
+│   ├── joint_limits.yaml           # 로컬 실측값, Git 추적 제외
+│   ├── motor_config.example.yaml   # 보수적인 모터 설정 템플릿
+│   └── motor_config.yaml           # 로컬 ID/영점/gain, Git 추적 제외
 ├── include/raven_control/
+│   ├── config/
+│   │   └── motor_config.hpp
 │   ├── hal/
 │   │   ├── can_interface.hpp
 │   │   └── motor_driver.hpp
 │   └── safety/
 │       └── joint_limiter.hpp
 ├── src/
+│   ├── config/
+│   │   └── motor_config.cpp
 │   ├── hal/
 │   │   ├── can_interface.cpp
 │   │   └── motor_driver.cpp
@@ -42,6 +49,7 @@ RAVEN_control/
 │   └── show_xbox_control_data.cpp
 └── tests/
     ├── joint_limiter_test.cpp
+    ├── motor_config_test.cpp
     └── motor_driver_safety_test.cpp
 ```
 
@@ -54,13 +62,39 @@ RAVEN_control/
 
 | 파일/폴더 | 역할 |
 |---|---|
-| `config/joint_limits.yaml` | 조인트별 제한값의 단일 설정 지점. `confirmed: false`이면 enable 금지 |
+| `config/*.example.yaml` | Git에 추적하는 안전한 템플릿. 새 환경의 시작점 |
+| `config/joint_limits.yaml` | 로컬 실측 제한값. `confirmed: false`이면 enable 금지 |
+| `config/motor_config.yaml` | 로컬 CAN ID, 좌표 보정, Kp/Kd, setpoint slew 및 주기 |
+| `config/motor_config` C++ 모듈 | YAML 로딩과 범위·중복·주기 검증 |
 | `safety/joint_limiter` | 하드 리밋 판정, 목표값 clamp, soft-wall 토크 계산만 담당하는 순수 로직 |
 | `hal/can_interface` | Linux SocketCAN의 열기·송신·수신만 담당 |
 | `hal/motor_driver` | RS02 프레임 변환, 피드백 관리, enable/stop, 송신 직전 `JointLimiter` 적용 |
 | `apps/debug/position_control_multi` | 키 입력과 화면 표시를 제공하는 검증용 앱. 실제 최종 main이 아님 |
 | `tools/` | 모터 설정·입력 확인용 독립 유지보수 도구 |
 | `tests/` | 하드웨어 없이 limiter와 fail-safe 동작을 검증 |
+
+로컬 YAML은 프로그램 시작 시 한 번 읽는다. 값을 바꾼 뒤 프로그램만 다시
+실행하면 되며 재빌드는 필요 없다. 구동 중 hot reload는 하지 않는다.
+RS02 wire format의 고정 범위(`Kp 0..500`, `Kd 0..5`)는 사용자 설정이
+아니므로 YAML이 아니라 HAL 코드에 둔다.
+
+`joint_limits.yaml`의 각도는 보정 후 조인트 좌표계다. RS02의 `mechPos`는
+다음 식으로 변환한 뒤 hard-limit 검사에 사용한다.
+
+```text
+q_joint = position_sign
+          * (mechPos - joint_zero_at_motor_rad)
+          / joint_to_motor_ratio
+```
+
+디버그 앱의 실행 인자는 CAN 인터페이스, 조인트 리밋, 모터 설정 순서다.
+
+```bash
+./build/position_control_multi \
+  can0 \
+  config/joint_limits.yaml \
+  config/motor_config.yaml
+```
 
 ## 핵심 설계 결정
 

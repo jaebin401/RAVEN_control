@@ -1,7 +1,9 @@
+#include "raven_control/config/motor_config.hpp"
 #include "raven_control/hal/can_interface.hpp"
 #include "raven_control/hal/motor_driver.hpp"
 #include "raven_control/safety/joint_limiter.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -9,6 +11,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstring>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <optional>
@@ -26,28 +29,30 @@ namespace {
 
 constexpr double PI = 3.14159265358979323846;
 constexpr double STEP_DEG = 2.0;
-constexpr double MAX_SPEED_DEG_PER_SEC = 500.0;
-constexpr double CONTROL_PERIOD_SEC = 0.02;
 
 struct JointSpec {
     const char* name;
-    std::uint8_t motor_id;
     char positive_key;
     char negative_key;
 };
 
 constexpr std::array<JointSpec, 3> JOINTS{{
-    {"shoulder_Joint", 1, 'w', 's'},
-    {"upperArm_Joint", 2, 'e', 'd'},
-    {"foreArm_Joint", 3, 'r', 'f'},
+    {"shoulder_Joint", 'w', 's'},
+    {"upperArm_Joint", 'e', 'd'},
+    {"foreArm_Joint", 'r', 'f'},
 }};
 
 struct ControlState {
     std::atomic<double> target_rad{0.0};
     std::atomic<double> setpoint_rad{0.0};
-    std::atomic<double> kp{40.0};
-    std::atomic<double> kd{5.0};
+    std::atomic<double> kp{0.0};
+    std::atomic<double> kd{0.0};
+    double max_slew_rate_rad_s = 0.0;
 };
+
+using JointBindings = std::array<
+    const raven_control::config::JointMotorRuntimeConfig*,
+    JOINTS.size()>;
 
 volatile std::sig_atomic_t stop_requested = 0;
 
@@ -139,16 +144,59 @@ std::optional<char> readKey()
     return std::nullopt;
 }
 
-std::vector<raven_control::hal::JointMotorConfig> motorMap()
+JointBindings bindConfiguredJoints(
+    const raven_control::config::MotorRuntimeConfig& config)
+{
+    if (config.joints.size() != JOINTS.size()) {
+        throw std::runtime_error(
+            "position_control_multi requires exactly three joints");
+    }
+
+    JointBindings bindings{};
+    for (std::size_t index = 0; index < JOINTS.size(); ++index) {
+        bindings[index] = config.findJoint(JOINTS[index].name);
+        if (bindings[index] == nullptr) {
+            throw std::runtime_error(
+                "Motor config is missing joint '" +
+                std::string(JOINTS[index].name) + "'");
+        }
+    }
+    return bindings;
+}
+
+std::vector<raven_control::hal::JointMotorConfig> motorMap(
+    const JointBindings& bindings)
 {
     std::vector<raven_control::hal::JointMotorConfig> result;
     result.reserve(JOINTS.size());
-    for (const auto& joint : JOINTS)
-        result.push_back({joint.name, joint.motor_id});
+    for (const auto* joint : bindings) {
+        result.push_back({
+            joint->joint_name,
+            joint->motor_id,
+            joint->position_sign,
+            joint->joint_zero_at_motor_rad,
+            joint->joint_to_motor_ratio,
+        });
+    }
     return result;
 }
 
-void printHelp()
+void initializeControlStates(
+    const JointBindings& bindings,
+    std::array<ControlState, JOINTS.size()>& states)
+{
+    for (std::size_t index = 0; index < JOINTS.size(); ++index) {
+        states[index].kp.store(
+            bindings[index]->position_control.kp);
+        states[index].kd.store(
+            bindings[index]->position_control.kd);
+        states[index].max_slew_rate_rad_s =
+            bindings[index]->
+                position_control.max_slew_rate_rad_s;
+    }
+}
+
+void printHelp(const JointBindings& bindings)
 {
     std::cout
         << "========================================\n"
@@ -159,11 +207,24 @@ void printHelp()
         << "R/F   : forearm +/-\n"
         << "/     : enter three targets in degrees\n"
         << "Q     : quit\n"
-        << "========================================\n";
+        << "----------------------------------------\n";
+    for (std::size_t index = 0; index < JOINTS.size(); ++index) {
+        std::cout
+            << JOINTS[index].name
+            << " ID=" << static_cast<int>(bindings[index]->motor_id)
+            << " Kp=" << bindings[index]->position_control.kp
+            << " Kd=" << bindings[index]->position_control.kd
+            << " slew="
+            << bindings[index]->
+                position_control.max_slew_rate_rad_s
+            << " rad/s\n";
+    }
+    std::cout << "========================================\n";
 }
 
 void printStatus(
     raven_control::hal::MotorDriver& driver,
+    const JointBindings& bindings,
     const std::array<ControlState, JOINTS.size()>& states)
 {
     std::cout << "\r\033[K[KEY] ";
@@ -175,7 +236,8 @@ void printStatus(
             : 0.0;
 
         std::cout
-            << "ID:" << static_cast<int>(JOINTS[index].motor_id)
+            << "ID:"
+            << static_cast<int>(bindings[index]->motor_id)
             << (driver.isEnabled()
                     ? " \033[32mON \033[0m"
                     : " \033[31mOFF\033[0m")
@@ -189,27 +251,29 @@ void printStatus(
 
 void controlLoop(
     raven_control::hal::MotorDriver& driver,
+    const raven_control::config::MotorRuntimeConfig& motor_config,
+    const JointBindings& bindings,
     std::array<ControlState, JOINTS.size()>& states,
     std::atomic<bool>& running,
     std::atomic<bool>& monitor_active)
 {
-    const auto period = std::chrono::duration<double>(CONTROL_PERIOD_SEC);
-    const double max_step_rad =
-        degreesToRadians(MAX_SPEED_DEG_PER_SEC) * CONTROL_PERIOD_SEC;
-    std::size_t cycle = 0;
     auto next_cycle = std::chrono::steady_clock::now();
+    auto next_position_request = next_cycle;
+    auto next_status = next_cycle;
 
     while (running.load() && !stop_requested) {
-        next_cycle +=
-            std::chrono::duration_cast<
-                std::chrono::steady_clock::duration>(period);
-        ++cycle;
-
-        if (cycle % 5 == 0 &&
-            !driver.requestMechanicalPositions()) {
-            (void)driver.stopAll();
-            running.store(false);
-            break;
+        next_cycle += motor_config.control_period;
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_position_request) {
+            if (!driver.requestMechanicalPositions()) {
+                (void)driver.stopAll();
+                running.store(false);
+                break;
+            }
+            do {
+                next_position_request +=
+                    motor_config.position_request_period;
+            } while (next_position_request <= now);
         }
         (void)driver.poll();
 
@@ -227,6 +291,10 @@ void controlLoop(
                 const double current =
                     states[index].setpoint_rad.load();
                 const double difference = target - current;
+                const double max_step_rad =
+                    states[index].max_slew_rate_rad_s *
+                    std::chrono::duration<double>(
+                        motor_config.control_period).count();
                 const double next =
                     std::abs(difference) <= max_step_rad
                     ? target
@@ -250,8 +318,11 @@ void controlLoop(
             }
         }
 
-        if (monitor_active.load() && cycle % 5 == 0)
-            printStatus(driver, states);
+        if (monitor_active.load() && now >= next_status) {
+            printStatus(driver, bindings, states);
+            next_status =
+                now + std::chrono::milliseconds(100);
+        }
 
         std::this_thread::sleep_until(next_cycle);
     }
@@ -314,6 +385,8 @@ int main(int argc, char* argv[])
         argc > 1 ? argv[1] : "can0";
     const std::string limits_path =
         argc > 2 ? argv[2] : "config/joint_limits.yaml";
+    const std::string motor_config_path =
+        argc > 3 ? argv[3] : "config/motor_config.yaml";
 
     std::signal(SIGINT, handleSignal);
     std::signal(SIGTERM, handleSignal);
@@ -321,12 +394,20 @@ int main(int argc, char* argv[])
     try {
         auto limiters =
             raven_control::safety::loadJointLimiters(limits_path);
+        const auto motor_config =
+            raven_control::config::loadMotorRuntimeConfig(
+                motor_config_path);
+        const JointBindings bindings =
+            bindConfiguredJoints(motor_config);
         raven_control::hal::CanInterface can(interface_name);
         raven_control::hal::MotorDriver driver(
             can,
-            motorMap(),
-            std::move(limiters));
+            motorMap(bindings),
+            std::move(limiters),
+            0xFD,
+            motor_config.feedback_timeout);
         std::array<ControlState, JOINTS.size()> states;
+        initializeControlStates(bindings, states);
         std::atomic<bool> running{true};
         std::atomic<bool> monitor_active{true};
 
@@ -339,7 +420,9 @@ int main(int argc, char* argv[])
 
         const auto feedback_deadline =
             std::chrono::steady_clock::now() +
-            std::chrono::milliseconds(500);
+            std::max(
+                std::chrono::milliseconds(500),
+                motor_config.feedback_timeout * 2);
         while (!driver.allFeedbackValid() &&
                std::chrono::steady_clock::now() <
                    feedback_deadline) {
@@ -349,12 +432,17 @@ int main(int argc, char* argv[])
         }
 
         initializeTargetsFromFeedback(driver, states);
-        printHelp();
+        std::cout
+            << "Joint limits: " << limits_path << '\n'
+            << "Motor config: " << motor_config_path << '\n';
+        printHelp(bindings);
 
         TerminalMode terminal;
         std::thread control_thread(
             controlLoop,
             std::ref(driver),
+            std::cref(motor_config),
+            std::cref(bindings),
             std::ref(states),
             std::ref(running),
             std::ref(monitor_active));

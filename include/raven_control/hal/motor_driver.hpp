@@ -14,9 +14,17 @@
 
 namespace raven_control::hal {
 
+// Fixed wire ranges for RS02 private-protocol communication type 1.
+inline constexpr double RS02_OPERATION_MAX_KP = 500.0;
+inline constexpr double RS02_OPERATION_MAX_KD = 5.0;
+inline constexpr double RS02_OPERATION_MAX_VELOCITY_RAD_S = 44.0;
+
 struct JointMotorConfig {
     std::string joint_name;
     std::uint8_t motor_id = 0;
+    int position_sign = 1;
+    double joint_zero_at_motor_rad = 0.0;
+    double joint_to_motor_ratio = 1.0;
 };
 
 struct MotorFeedback {

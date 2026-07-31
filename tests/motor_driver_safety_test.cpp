@@ -89,6 +89,15 @@ raven_control::safety::JointLimiterMap limiters(bool confirmed)
     return result;
 }
 
+std::uint16_t decodeUnsignedU16(
+    const raven_control::hal::CanFrame& frame,
+    std::size_t offset)
+{
+    return
+        (std::uint16_t(frame.data[offset]) << 8) |
+        std::uint16_t(frame.data[offset + 1]);
+}
+
 raven_control::hal::CanFrame positionFeedback(
     std::uint8_t motor_id,
     float position_rad)
@@ -125,7 +134,7 @@ double decodePosition(
     const std::uint16_t encoded =
         (std::uint16_t(frame.data[0]) << 8) |
         std::uint16_t(frame.data[1]);
-    return ((static_cast<double>(encoded) / 32767.0) - 1.0) *
+    return ((static_cast<double>(encoded) / 65535.0) * 2.0 - 1.0) *
            (4.0 * PI);
 }
 
@@ -196,6 +205,115 @@ void testTargetIsClampedBeforeCanWrite()
     }
 }
 
+void testOfficialGainEncoding()
+{
+    FakeCanTransport transport;
+    raven_control::hal::MotorDriver driver(
+        transport,
+        motorMap(),
+        limiters(true));
+    queueHealthyFeedback(transport);
+    driver.poll();
+    check(
+        driver.enableAll() ==
+            raven_control::hal::MotorCommandResult::Sent,
+        "healthy joints must enable before gain encoding test");
+    transport.sent.clear();
+
+    check(
+        driver.sendPositionCommand(
+            "joint_1",
+            0.0,
+            50.0,
+            0.5) ==
+            raven_control::hal::MotorCommandResult::Sent,
+        "valid RS02 gains must be sent");
+    check(transport.sent.size() == 1,
+          "gain test must emit exactly one frame");
+    if (transport.sent.size() == 1) {
+        check(
+            decodeUnsignedU16(transport.sent.front(), 4) == 6553,
+            "Kp must be encoded against the official 0..500 range");
+        check(
+            decodeUnsignedU16(transport.sent.front(), 6) == 6553,
+            "Kd must be encoded against the official 0..5 range");
+    }
+}
+
+void testPositionCalibration()
+{
+    FakeCanTransport transport;
+    auto map = motorMap();
+    map[0].position_sign = -1;
+    map[0].joint_zero_at_motor_rad = 0.5;
+    map[0].joint_to_motor_ratio = 2.0;
+
+    raven_control::hal::MotorDriver driver(
+        transport,
+        map,
+        limiters(true));
+    transport.incoming.push_back(positionFeedback(1, 0.3F));
+    transport.incoming.push_back(positionFeedback(2, 0.1F));
+    transport.incoming.push_back(positionFeedback(3, -0.1F));
+    driver.poll();
+
+    const auto feedback = driver.feedback("joint_1");
+    check(feedback && std::abs(feedback->position_rad - 0.1) < 1e-6,
+          "motor feedback must be converted into joint coordinates");
+    check(
+        driver.enableAll() ==
+            raven_control::hal::MotorCommandResult::Sent,
+        "calibrated joints must enable with valid joint feedback");
+    transport.sent.clear();
+
+    check(
+        driver.sendPositionCommand(
+            "joint_1",
+            0.2,
+            8.0,
+            0.15) ==
+            raven_control::hal::MotorCommandResult::Sent,
+        "calibrated joint target must be accepted");
+    check(transport.sent.size() == 1,
+          "calibrated target must emit exactly one frame");
+    if (transport.sent.size() == 1) {
+        check(
+            std::abs(
+                decodePosition(transport.sent.front()) - 0.1) <
+                0.001,
+            "joint target must be converted into motor coordinates");
+    }
+}
+
+void testOutOfRangeGainLatchesAndStopsAll()
+{
+    FakeCanTransport transport;
+    raven_control::hal::MotorDriver driver(
+        transport,
+        motorMap(),
+        limiters(true));
+    queueHealthyFeedback(transport);
+    driver.poll();
+    check(
+        driver.enableAll() ==
+            raven_control::hal::MotorCommandResult::Sent,
+        "healthy joints must enable before gain range test");
+    transport.sent.clear();
+
+    check(
+        driver.sendPositionCommand(
+            "joint_1",
+            0.0,
+            500.1,
+            0.15) ==
+            raven_control::hal::MotorCommandResult::InvalidCommand,
+        "gain outside the RS02 range must be rejected");
+    check(driver.faultLatched(),
+          "out-of-range gain must latch a fault");
+    check(countFrames(transport, COMM_STOP) == 3,
+          "out-of-range gain must stop every configured motor");
+}
+
 void testHardViolationLatchesAndStopsAll()
 {
     FakeCanTransport transport;
@@ -263,6 +381,9 @@ int main()
 {
     testEnableRequiresConfirmedLimits();
     testTargetIsClampedBeforeCanWrite();
+    testOfficialGainEncoding();
+    testPositionCalibration();
+    testOutOfRangeGainLatchesAndStopsAll();
     testHardViolationLatchesAndStopsAll();
     testInvalidTargetLatchesAndStopsAll();
 
