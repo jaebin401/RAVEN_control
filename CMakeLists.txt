@@ -159,6 +159,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(position_control_multi PRIVATE raven_hal)
     raven_enable_warnings(position_control_multi)
 
+    add_executable(
+        coordinated_motion_demo
+        apps/coordinated_motion_demo.cpp
+    )
+    target_link_libraries(coordinated_motion_demo PRIVATE raven_hal)
+    raven_enable_warnings(coordinated_motion_demo)
+
     raven_add_linux_executable(
         show_xbox_control_data
         tools/show_xbox_control_data.cpp
