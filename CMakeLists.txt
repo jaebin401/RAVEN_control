@@ -75,6 +75,17 @@ target_compile_definitions(
     PRIVATE RAVEN_HAS_YAML_CPP=${RAVEN_HAS_YAML_CPP}
 )
 
+add_library(
+    raven_logging
+    STATIC
+    src/logging/motion_logger.cpp
+)
+target_include_directories(
+    raven_logging
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+raven_enable_warnings(raven_logging)
+
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/config")
 
 function(raven_copy_runtime_config local_name example_name)
@@ -129,6 +140,14 @@ if(BUILD_TESTING)
     target_link_libraries(motor_config_test PRIVATE raven_hal)
     raven_enable_warnings(motor_config_test)
     add_test(NAME motor_config_test COMMAND motor_config_test)
+
+    add_executable(
+        motion_logger_test
+        tests/motion_logger_test.cpp
+    )
+    target_link_libraries(motion_logger_test PRIVATE raven_logging)
+    raven_enable_warnings(motion_logger_test)
+    add_test(NAME motion_logger_test COMMAND motion_logger_test)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -163,7 +182,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         coordinated_motion_demo
         apps/coordinated_motion_demo.cpp
     )
-    target_link_libraries(coordinated_motion_demo PRIVATE raven_hal)
+    target_link_libraries(
+        coordinated_motion_demo
+        PRIVATE raven_hal raven_logging
+    )
     raven_enable_warnings(coordinated_motion_demo)
 
     raven_add_linux_executable(

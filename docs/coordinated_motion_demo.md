@@ -41,8 +41,13 @@ cmake --build build --target coordinated_motion_demo -j"$(nproc)"
 ./build/coordinated_motion_demo \
   can0 \
   config/joint_limits.yaml \
-  config/motor_config.yaml
+  config/motor_config.yaml \
+  logs/my_demo.csv
 ```
+
+네 번째 인자인 로그 경로는 생략할 수 있다. 생략하면
+`logs/coordinated_motion_YYYYMMDD_HHMMSS.csv` 형식으로 자동 생성된다.
+`logs/`는 Git 추적에서 제외된다.
 
 `Space`을 누르면 현재 자세를 기준으로 계획을 생성하고 한 번 실행한다.
 동작을 마치면 시작 자세를 계속 유지한다. 이 상태에서 `Space`을 누르면
@@ -51,3 +56,39 @@ cmake --build build --target coordinated_motion_demo -j"$(nproc)"
 실행 중 `Space`, `Q`, 또는 `Ctrl+C`를 누르면 긴급 중단한다. CAN 오류,
 stale feedback, hard-limit 위반도 기존 `MotorDriver`의 latched fault를
 통해 전체 정지를 발생시킨다.
+
+## Motion diagnostics
+
+제어 중에는 파일을 쓰지 않고 메모리에만 샘플을 저장한다. 사용자가 모터를
+비활성화하거나 fault로 종료된 뒤 CSV를 한 번에 기록한다.
+
+CSV에는 다음 값이 포함된다.
+
+- 제어 주기 `dt`, 예약 시각 대비 lateness, deadline miss
+- 관절별 command/encoder position과 trajectory/전송/encoder velocity
+- position error와 P·D·feedforward·총 제어토크 추정값
+- feedback timestamp 기준 age와 validity
+
+현재 기본 `position_request_period_ms: 100`에서는 엔코더가 10Hz로만
+갱신된다. 물리적 끊김과 피드백 샘플링을 구분하는 진단 실행에서는 다음
+설정을 권장한다.
+
+```yaml
+runtime:
+  control_period_ms: 20
+  feedback_timeout_ms: 250
+  position_request_period_ms: 20
+```
+
+로그 요약은 Python 표준 라이브러리만으로 실행할 수 있다.
+
+```bash
+python3 tools/analyze_motion_log.py logs/my_demo.csv
+```
+
+`matplotlib`이 설치되어 있다면 command/encoder와 loop timing 그래프를
+PNG로 저장할 수 있다.
+
+```bash
+python3 tools/analyze_motion_log.py logs/my_demo.csv --plot
+```

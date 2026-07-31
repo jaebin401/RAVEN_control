@@ -1,6 +1,7 @@
 #include "raven_control/config/motor_config.hpp"
 #include "raven_control/hal/can_interface.hpp"
 #include "raven_control/hal/motor_driver.hpp"
+#include "raven_control/logging/motion_logger.hpp"
 #include "raven_control/safety/joint_limiter.hpp"
 
 #include <algorithm>
@@ -12,10 +13,12 @@
 #include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <sys/select.h>
@@ -27,6 +30,7 @@ namespace {
 constexpr double PI = 3.14159265358979323846;
 constexpr std::chrono::milliseconds TRANSITION_DURATION{4000};
 constexpr std::chrono::milliseconds POSE_HOLD_DURATION{750};
+constexpr std::size_t DIAGNOSTIC_RESERVE_SAMPLES = 30000;
 
 struct JointSpec {
     const char* name;
@@ -71,6 +75,19 @@ using JointPositions = std::array<double, JOINTS.size()>;
 struct PlannedPose {
     const char* name;
     JointPositions target_rad;
+};
+
+struct DiagnosticState {
+    std::uint64_t cycle_index = 0;
+    std::optional<std::chrono::steady_clock::time_point>
+        previous_cycle_at;
+    JointPositions previous_command{};
+    std::array<bool, JOINTS.size()> command_initialized{};
+    JointPositions previous_feedback{};
+    std::array<std::chrono::steady_clock::time_point, JOINTS.size()>
+        previous_feedback_at{};
+    std::array<bool, JOINTS.size()> feedback_initialized{};
+    JointPositions estimated_actual_velocity{};
 };
 
 volatile std::sig_atomic_t stop_requested = 0;
@@ -226,6 +243,14 @@ std::vector<raven_control::hal::JointMotorConfig> motorMap(
         });
     }
     return result;
+}
+
+std::array<std::string, JOINTS.size()> diagnosticJointNames()
+{
+    std::array<std::string, JOINTS.size()> names{};
+    for (std::size_t index = 0; index < JOINTS.size(); ++index)
+        names[index] = JOINTS[index].name;
+    return names;
 }
 
 JointPositions readJointPositions(
@@ -460,6 +485,113 @@ void sendTargets(
     }
 }
 
+void recordDiagnosticSample(
+    raven_control::logging::MotionLogger& logger,
+    DiagnosticState& state,
+    const char* phase_name,
+    std::chrono::steady_clock::time_point scheduled_at,
+    std::chrono::steady_clock::time_point cycle_started_at,
+    const raven_control::config::MotorRuntimeConfig& config,
+    const JointBindings& bindings,
+    raven_control::hal::MotorDriver& driver,
+    const JointPositions& target)
+{
+    const auto observed_at = std::chrono::steady_clock::now();
+    const double command_dt_seconds = state.previous_cycle_at
+        ? std::chrono::duration<double>(
+              cycle_started_at - *state.previous_cycle_at).count()
+        : 0.0;
+
+    raven_control::logging::MotionSample sample;
+    sample.cycle_index = state.cycle_index++;
+    sample.phase = phase_name;
+    sample.scheduled_at = scheduled_at;
+    sample.actual_at = cycle_started_at;
+    sample.control_period =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            config.control_period);
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    for (std::size_t index = 0; index < JOINTS.size(); ++index) {
+        raven_control::logging::JointMotionSample joint_sample;
+        joint_sample.command_position_rad = target[index];
+        joint_sample.trajectory_velocity_rad_s =
+            state.command_initialized[index] &&
+                command_dt_seconds > 0.0
+            ? (target[index] - state.previous_command[index]) /
+                  command_dt_seconds
+            : 0.0;
+        joint_sample.sent_velocity_rad_s = 0.0;
+        joint_sample.sent_feedforward_torque_nm = 0.0;
+        joint_sample.kp = bindings[index]->position_control.kp;
+        joint_sample.kd = bindings[index]->position_control.kd;
+
+        const auto feedback = driver.feedback(JOINTS[index].name);
+        if (feedback && feedback->valid) {
+            joint_sample.feedback_valid = true;
+            joint_sample.actual_position_rad = feedback->position_rad;
+            joint_sample.feedback_age_ms =
+                std::chrono::duration<double, std::milli>(
+                    observed_at - feedback->received_at).count();
+
+            if (state.feedback_initialized[index] &&
+                feedback->received_at >
+                    state.previous_feedback_at[index]) {
+                const double feedback_dt_seconds =
+                    std::chrono::duration<double>(
+                        feedback->received_at -
+                        state.previous_feedback_at[index]).count();
+                if (feedback_dt_seconds > 0.0) {
+                    state.estimated_actual_velocity[index] =
+                        (feedback->position_rad -
+                         state.previous_feedback[index]) /
+                        feedback_dt_seconds;
+                }
+            }
+
+            if (!state.feedback_initialized[index] ||
+                feedback->received_at >
+                    state.previous_feedback_at[index]) {
+                state.previous_feedback[index] =
+                    feedback->position_rad;
+                state.previous_feedback_at[index] =
+                    feedback->received_at;
+                state.feedback_initialized[index] = true;
+            }
+
+            joint_sample.actual_velocity_rad_s =
+                state.estimated_actual_velocity[index];
+            joint_sample.position_error_rad =
+                target[index] - feedback->position_rad;
+            joint_sample.estimated_p_torque_nm =
+                joint_sample.kp * joint_sample.position_error_rad;
+            // MotorDriver currently sends desired velocity = 0.
+            joint_sample.estimated_d_torque_nm =
+                joint_sample.kd *
+                (joint_sample.sent_velocity_rad_s -
+                 joint_sample.actual_velocity_rad_s);
+            joint_sample.estimated_control_torque_nm =
+                joint_sample.estimated_p_torque_nm +
+                joint_sample.estimated_d_torque_nm +
+                joint_sample.sent_feedforward_torque_nm;
+        } else {
+            joint_sample.actual_position_rad = nan;
+            joint_sample.actual_velocity_rad_s = nan;
+            joint_sample.position_error_rad = nan;
+            joint_sample.estimated_p_torque_nm = nan;
+            joint_sample.estimated_d_torque_nm = nan;
+            joint_sample.estimated_control_torque_nm = nan;
+            joint_sample.feedback_age_ms = nan;
+        }
+
+        state.previous_command[index] = target[index];
+        state.command_initialized[index] = true;
+        sample.joints[index] = joint_sample;
+    }
+
+    state.previous_cycle_at = cycle_started_at;
+    logger.record(std::move(sample));
+}
+
 bool runPhase(
     const char* phase_name,
     raven_control::hal::MotorDriver& driver,
@@ -467,7 +599,9 @@ bool runPhase(
     const JointBindings& bindings,
     const JointPositions& start,
     const JointPositions& goal,
-    std::chrono::milliseconds duration)
+    std::chrono::milliseconds duration,
+    raven_control::logging::MotionLogger& logger,
+    DiagnosticState& diagnostic_state)
 {
     const auto phase_start = std::chrono::steady_clock::now();
     const auto phase_end = phase_start + duration;
@@ -506,6 +640,16 @@ bool runPhase(
                 blend * (goal[index] - start[index]);
         }
         sendTargets(driver, bindings, target);
+        recordDiagnosticSample(
+            logger,
+            diagnostic_state,
+            phase_name,
+            next_cycle,
+            now,
+            config,
+            bindings,
+            driver,
+            target);
 
         if (now >= next_status) {
             printStatus(phase_name, driver, target);
@@ -523,7 +667,9 @@ bool holdPose(
     raven_control::hal::MotorDriver& driver,
     const raven_control::config::MotorRuntimeConfig& config,
     const JointBindings& bindings,
-    const JointPositions& pose)
+    const JointPositions& pose,
+    raven_control::logging::MotionLogger& logger,
+    DiagnosticState& diagnostic_state)
 {
     return runPhase(
         phase_name,
@@ -532,14 +678,18 @@ bool holdPose(
         bindings,
         pose,
         pose,
-        POSE_HOLD_DURATION);
+        POSE_HOLD_DURATION,
+        logger,
+        diagnostic_state);
 }
 
 bool holdHomeUntilDisabled(
     raven_control::hal::MotorDriver& driver,
     const raven_control::config::MotorRuntimeConfig& config,
     const JointBindings& bindings,
-    const JointPositions& home)
+    const JointPositions& home,
+    raven_control::logging::MotionLogger& logger,
+    DiagnosticState& diagnostic_state)
 {
     std::cout
         << "\nReturned to the start pose.\n"
@@ -576,6 +726,16 @@ bool holdHomeUntilDisabled(
             throw std::runtime_error(driver.faultReason());
 
         sendTargets(driver, bindings, home);
+        recordDiagnosticSample(
+            logger,
+            diagnostic_state,
+            "Home Hold",
+            next_cycle,
+            now,
+            config,
+            bindings,
+            driver,
+            home);
         if (now >= next_status) {
             printStatus("Home Hold", driver, home);
             next_status = now + std::chrono::milliseconds(200);
@@ -597,9 +757,18 @@ int main(int argc, char* argv[])
         argc > 2 ? argv[2] : "config/joint_limits.yaml";
     const std::string motor_config_path =
         argc > 3 ? argv[3] : "config/motor_config.yaml";
+    const std::string log_path =
+        argc > 4
+        ? argv[4]
+        : raven_control::logging::makeTimestampedLogPath(
+              "logs",
+              "coordinated_motion");
 
     std::signal(SIGINT, handleSignal);
     std::signal(SIGTERM, handleSignal);
+
+    std::optional<raven_control::logging::MotionLogger> logger;
+    bool log_saved = false;
 
     try {
         auto limiters =
@@ -617,6 +786,10 @@ int main(int argc, char* argv[])
             0xFD,
             motor_config.feedback_timeout);
         StopGuard stop_guard(driver);
+        logger.emplace(
+            diagnosticJointNames(),
+            DIAGNOSTIC_RESERVE_SAMPLES);
+        DiagnosticState diagnostic_state;
 
         if (!driver.stopAll())
             throw std::runtime_error("Failed to send startup stop");
@@ -626,6 +799,7 @@ int main(int argc, char* argv[])
             << "RAVEN coordinated three-joint demo\n"
             << "Joint limits: " << limits_path << '\n'
             << "Motor config: " << motor_config_path << '\n'
+            << "Motion log: " << log_path << '\n'
             << "Motion: Shoulder independent, UpperArm/ForeArm opposite\n";
 
         TerminalMode terminal;
@@ -658,13 +832,17 @@ int main(int argc, char* argv[])
                     bindings,
                     segment_start,
                     pose.target_rad,
-                    TRANSITION_DURATION) ||
+                    TRANSITION_DURATION,
+                    *logger,
+                    diagnostic_state) ||
                 !holdPose(
                     pose.name,
                     driver,
                     motor_config,
                     bindings,
-                    pose.target_rad)) {
+                    pose.target_rad,
+                    *logger,
+                    diagnostic_state)) {
                 completed = false;
                 break;
             }
@@ -676,17 +854,27 @@ int main(int argc, char* argv[])
                 driver,
                 motor_config,
                 bindings,
-                home);
+                home,
+                *logger,
+                diagnostic_state);
         }
 
         const bool stopped = driver.stopAll();
+        if (!stopped) {
+            throw std::runtime_error(
+                "Failed to send final stop");
+        }
         stop_guard.release();
         std::cout << "\n";
 
-        if (!stopped) {
-            std::cerr << "Failed to send final stop\n";
-            return 1;
+        if (logger->sampleCount() > 0) {
+            logger->saveCsv(log_path);
+            log_saved = true;
+            std::cout
+                << "Motion log saved: " << log_path
+                << " (" << logger->sampleCount() << " samples)\n";
         }
+
         if (!completed || stop_requested) {
             std::cout << "Demo stopped by user\n";
             return 0;
@@ -695,6 +883,18 @@ int main(int argc, char* argv[])
         std::cout << "Motors disabled by user\n";
         return 0;
     } catch (const std::exception& error) {
+        if (logger && !log_saved && logger->sampleCount() > 0) {
+            try {
+                logger->saveCsv(log_path);
+                std::cerr
+                    << "Motion log saved after failure: "
+                    << log_path << '\n';
+            } catch (const std::exception& log_error) {
+                std::cerr
+                    << "\nFailed to save motion log: "
+                    << log_error.what() << '\n';
+            }
+        }
         std::cerr << "\nFatal error: " << error.what() << '\n';
         return 1;
     }
