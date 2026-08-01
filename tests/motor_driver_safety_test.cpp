@@ -146,6 +146,15 @@ double decodeVelocity(
            raven_control::hal::RS02_OPERATION_MAX_VELOCITY_RAD_S;
 }
 
+double decodeTorque(
+    const raven_control::hal::CanFrame& frame)
+{
+    const std::uint16_t encoded =
+        static_cast<std::uint16_t>((frame.id >> 8) & 0xFFFF);
+    return ((static_cast<double>(encoded) / 65535.0) * 2.0 - 1.0) *
+           raven_control::hal::RS02_OPERATION_MAX_TORQUE_NM;
+}
+
 std::size_t countFrames(
     const FakeCanTransport& transport,
     std::uint8_t type)
@@ -192,7 +201,8 @@ void testTargetIsClampedBeforeCanWrite()
 
     transport.sent.clear();
     const auto result =
-        driver.sendMitCommand("joint_1", 2.0, 1.0, 40.0, 5.0);
+        driver.sendMitCommand(
+            "joint_1", 2.0, 1.0, 40.0, 5.0, 0.0);
 
     check(
         result ==
@@ -234,7 +244,8 @@ void testOfficialGainEncoding()
             0.0,
             0.0,
             50.0,
-            0.5) ==
+            0.5,
+            8.5) ==
             raven_control::hal::MotorCommandResult::Sent,
         "valid RS02 gains must be sent");
     check(transport.sent.size() == 1,
@@ -246,6 +257,10 @@ void testOfficialGainEncoding()
         check(
             decodeUnsignedU16(transport.sent.front(), 6) == 6553,
             "Kd must be encoded against the official 0..5 range");
+        check(
+            std::abs(decodeTorque(transport.sent.front()) - 8.5) <
+                0.001,
+            "feedforward torque must use the official -17..17 N.m range");
     }
 }
 
@@ -281,7 +296,8 @@ void testPositionCalibration()
             0.2,
             0.25,
             8.0,
-            0.15) ==
+            0.15,
+            1.2) ==
             raven_control::hal::MotorCommandResult::Sent,
         "calibrated joint target must be accepted");
     check(transport.sent.size() == 1,
@@ -297,6 +313,11 @@ void testPositionCalibration()
                 decodeVelocity(transport.sent.front()) + 0.5) <
                 0.002,
             "joint velocity must be converted into motor coordinates");
+        check(
+            std::abs(
+                decodeTorque(transport.sent.front()) + 0.6) <
+                0.001,
+            "joint torque must preserve virtual work through calibration");
     }
 }
 
@@ -321,7 +342,8 @@ void testClampedTargetStopsOutwardDesiredVelocity()
             2.0,
             3.0,
             8.0,
-            0.15) ==
+            0.15,
+            0.0) ==
             raven_control::hal::MotorCommandResult::TargetClamped,
         "out-of-range target must report clamping");
     check(transport.sent.size() == 1,
@@ -355,7 +377,8 @@ void testOutOfRangeVelocityLatchesAndStopsAll()
             raven_control::hal::RS02_OPERATION_MAX_VELOCITY_RAD_S +
                 0.1,
             8.0,
-            0.15) ==
+            0.15,
+            0.0) ==
             raven_control::hal::MotorCommandResult::InvalidCommand,
         "velocity outside the RS02 range must be rejected");
     check(driver.faultLatched(),
@@ -385,7 +408,8 @@ void testOutOfRangeGainLatchesAndStopsAll()
             0.0,
             0.0,
             500.1,
-            0.15) ==
+            0.15,
+            0.0) ==
             raven_control::hal::MotorCommandResult::InvalidCommand,
         "gain outside the RS02 range must be rejected");
     check(driver.faultLatched(),
@@ -419,7 +443,8 @@ void testHardViolationLatchesAndStopsAll()
     check(countFrames(transport, COMM_STOP) == 3,
           "hard-limit fault must stop every configured motor");
     check(
-        driver.sendMitCommand("joint_1", 0.0, 0.0, 40.0, 5.0) ==
+        driver.sendMitCommand(
+            "joint_1", 0.0, 0.0, 40.0, 5.0, 0.0) ==
             raven_control::hal::MotorCommandResult::FaultLatched,
         "latched fault must reject subsequent commands");
 }
@@ -444,7 +469,8 @@ void testInvalidTargetLatchesAndStopsAll()
         std::numeric_limits<double>::quiet_NaN(),
         0.0,
         40.0,
-        5.0);
+        5.0,
+        0.0);
 
     check(
         result ==
@@ -454,6 +480,38 @@ void testInvalidTargetLatchesAndStopsAll()
           "non-finite command must latch a fault");
     check(countFrames(transport, COMM_STOP) == 3,
           "non-finite command must stop every configured motor");
+}
+
+void testOutOfRangeTorqueLatchesAndStopsAll()
+{
+    FakeCanTransport transport;
+    raven_control::hal::MotorDriver driver(
+        transport,
+        motorMap(),
+        limiters(true));
+    queueHealthyFeedback(transport);
+    driver.poll();
+    check(
+        driver.enableAll() ==
+            raven_control::hal::MotorCommandResult::Sent,
+        "healthy joints must enable before torque range test");
+    transport.sent.clear();
+
+    check(
+        driver.sendMitCommand(
+            "joint_1",
+            0.0,
+            0.0,
+            8.0,
+            0.15,
+            raven_control::hal::RS02_OPERATION_MAX_TORQUE_NM +
+                0.1) ==
+            raven_control::hal::MotorCommandResult::InvalidCommand,
+        "feedforward torque outside the RS02 range must be rejected");
+    check(driver.faultLatched(),
+          "out-of-range torque must latch a fault");
+    check(countFrames(transport, COMM_STOP) == 3,
+          "out-of-range torque must stop every configured motor");
 }
 
 }  // namespace
@@ -469,6 +527,7 @@ int main()
     testOutOfRangeGainLatchesAndStopsAll();
     testHardViolationLatchesAndStopsAll();
     testInvalidTargetLatchesAndStopsAll();
+    testOutOfRangeTorqueLatchesAndStopsAll();
 
     if (failures != 0) {
         std::cerr << failures << " motor driver safety test(s) failed\n";

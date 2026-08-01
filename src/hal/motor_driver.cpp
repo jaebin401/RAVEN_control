@@ -18,7 +18,6 @@ constexpr std::uint16_t PARAM_MECHANICAL_POSITION = 0x7019;
 
 constexpr double PI = 3.14159265358979323846;
 constexpr double POSITION_SCALE_RAD = 4.0 * PI;
-constexpr std::uint16_t ZERO_TORQUE_U16 = 0x7FFF;
 
 std::uint32_t buildExtendedId(
     std::uint8_t communication_type,
@@ -116,6 +115,15 @@ double jointToMotorVelocity(
     return static_cast<double>(motor.position_sign) *
            motor.joint_to_motor_ratio *
            joint_velocity_rad_s;
+}
+
+double jointToMotorTorque(
+    const JointMotorConfig& motor,
+    double joint_torque_nm)
+{
+    // Preserve virtual work for q_motor = sign * ratio * q_joint.
+    return static_cast<double>(motor.position_sign) *
+           joint_torque_nm / motor.joint_to_motor_ratio;
 }
 
 }  // namespace
@@ -307,7 +315,8 @@ MotorCommandResult MotorDriver::sendMitCommand(
     double target_position_rad,
     double target_velocity_rad_s,
     double kp,
-    double kd)
+    double kd,
+    double feedforward_torque_nm)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     if (fault_latched_)
@@ -323,7 +332,8 @@ MotorCommandResult MotorDriver::sendMitCommand(
     if (!std::isfinite(target_position_rad) ||
         !std::isfinite(target_velocity_rad_s) ||
         !std::isfinite(kp) ||
-        !std::isfinite(kd)) {
+        !std::isfinite(kd) ||
+        !std::isfinite(feedforward_torque_nm)) {
         latchFaultUnlocked("Non-finite MIT command on " + joint_name);
         return MotorCommandResult::InvalidCommand;
     }
@@ -366,10 +376,18 @@ MotorCommandResult MotorDriver::sendMitCommand(
     const double motor_velocity = jointToMotorVelocity(
         channel.motor,
         safe_joint_velocity);
+    const double motor_torque = jointToMotorTorque(
+        channel.motor,
+        feedforward_torque_nm);
     if (std::abs(motor_velocity) >
         RS02_OPERATION_MAX_VELOCITY_RAD_S) {
         latchFaultUnlocked(
             "Out-of-range MIT velocity on " + joint_name);
+        return MotorCommandResult::InvalidCommand;
+    }
+    if (std::abs(motor_torque) > RS02_OPERATION_MAX_TORQUE_NM) {
+        latchFaultUnlocked(
+            "Out-of-range MIT feedforward torque on " + joint_name);
         return MotorCommandResult::InvalidCommand;
     }
     if (!sendMitFrame(
@@ -377,7 +395,8 @@ MotorCommandResult MotorDriver::sendMitCommand(
             jointToMotorPosition(channel.motor, *safe_target),
             motor_velocity,
             kp,
-            kd)) {
+            kd,
+            motor_torque)) {
         latchFaultUnlocked("CAN MIT command failed on " + joint_name);
         return MotorCommandResult::CanWriteFailure;
     }
@@ -479,12 +498,13 @@ bool MotorDriver::sendMitFrame(
     double position_rad,
     double velocity_rad_s,
     double kp,
-    double kd)
+    double kd,
+    double torque_nm)
 {
     CanFrame frame;
     frame.id = buildExtendedId(
         COMM_OPERATION_CONTROL,
-        ZERO_TORQUE_U16,
+        encodeSymmetric(torque_nm, RS02_OPERATION_MAX_TORQUE_NM),
         motor_id);
     frame.dlc = 8;
 

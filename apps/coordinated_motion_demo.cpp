@@ -480,7 +480,8 @@ void sendTargets(
             target[index],
             target_velocity[index],
             bindings[index]->position_control.kp,
-            bindings[index]->position_control.kd);
+            bindings[index]->position_control.kd,
+            0.0);
         if (result !=
             raven_control::hal::MotorCommandResult::Sent) {
             throw std::runtime_error(

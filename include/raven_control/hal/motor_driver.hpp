@@ -18,6 +18,7 @@ namespace raven_control::hal {
 inline constexpr double RS02_OPERATION_MAX_KP = 500.0;
 inline constexpr double RS02_OPERATION_MAX_KD = 5.0;
 inline constexpr double RS02_OPERATION_MAX_VELOCITY_RAD_S = 44.0;
+inline constexpr double RS02_OPERATION_MAX_TORQUE_NM = 17.0;
 
 struct JointMotorConfig {
     std::string joint_name;
@@ -72,7 +73,8 @@ public:
         double target_position_rad,
         double target_velocity_rad_s,
         double kp,
-        double kd);
+        double kd,
+        double feedforward_torque_nm);
 
     [[nodiscard]] std::optional<MotorFeedback> feedback(
         const std::string& joint_name) const;
@@ -102,7 +104,8 @@ private:
         double position_rad,
         double velocity_rad_s,
         double kp,
-        double kd);
+        double kd,
+        double torque_nm);
     [[nodiscard]] bool stopAllUnlocked();
     void latchFaultUnlocked(std::string reason);
     void processFrameUnlocked(const CanFrame& frame);

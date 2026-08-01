@@ -312,7 +312,8 @@ void controlLoop(
                     next,
                     target_velocity_rad_s,
                     states[index].kp.load(),
-                    states[index].kd.load());
+                    states[index].kd.load(),
+                    0.0);
                 if (result !=
                         raven_control::hal::MotorCommandResult::Sent &&
                     result != raven_control::hal::

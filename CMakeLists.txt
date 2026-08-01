@@ -86,6 +86,27 @@ target_include_directories(
 )
 raven_enable_warnings(raven_logging)
 
+add_library(
+    raven_dynamics
+    STATIC
+    src/dynamics/gravity_compensator.cpp
+)
+target_include_directories(
+    raven_dynamics
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+raven_enable_warnings(raven_dynamics)
+
+add_executable(
+    gravity_model_check
+    tools/gravity_model_check.cpp
+)
+target_link_libraries(
+    gravity_model_check
+    PRIVATE raven_dynamics
+)
+raven_enable_warnings(gravity_model_check)
+
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/config")
 
 function(raven_copy_runtime_config local_name example_name)
@@ -148,6 +169,20 @@ if(BUILD_TESTING)
     target_link_libraries(motion_logger_test PRIVATE raven_logging)
     raven_enable_warnings(motion_logger_test)
     add_test(NAME motion_logger_test COMMAND motion_logger_test)
+
+    add_executable(
+        gravity_compensator_test
+        tests/gravity_compensator_test.cpp
+    )
+    target_link_libraries(
+        gravity_compensator_test
+        PRIVATE raven_dynamics
+    )
+    raven_enable_warnings(gravity_compensator_test)
+    add_test(
+        NAME gravity_compensator_test
+        COMMAND gravity_compensator_test
+    )
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

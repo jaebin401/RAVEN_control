@@ -605,7 +605,8 @@ int main(int argc, char* argv[])
                                 states[index].setpoint_rad,
                                 target_velocity_rad_s,
                                 states[index].kp,
-                                states[index].kd);
+                                states[index].kd,
+                                0.0);
                         if (result ==
                             raven_control::hal::
                                 MotorCommandResult::TargetClamped) {
