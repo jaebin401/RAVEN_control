@@ -22,10 +22,16 @@ struct JointMotionSample {
     double estimated_d_torque_nm = 0.0;
     double sent_feedforward_torque_nm = 0.0;
     double estimated_control_torque_nm = 0.0;
+    double measured_torque_nm = 0.0;
+    double motor_temperature_celsius = 0.0;
     double feedback_age_ms = 0.0;
+    double operation_feedback_age_ms = 0.0;
     double kp = 0.0;
     double kd = 0.0;
+    std::uint8_t motor_fault_flags = 0;
+    std::uint8_t motor_mode_state = 0;
     bool feedback_valid = false;
+    bool operation_feedback_valid = false;
 };
 
 struct MotionSample {

@@ -57,9 +57,9 @@ cmake --build build --target coordinated_motion_demo -j"$(nproc)"
 동작을 마치면 시작 자세를 계속 유지한다. 이 상태에서 `Space`을 누르면
 전체 모터를 비활성화하고 종료한다.
 
-실행 중 `Space`, `Q`, 또는 `Ctrl+C`를 누르면 긴급 중단한다. CAN 오류,
-stale feedback, hard-limit 위반도 기존 `MotorDriver`의 latched fault를
-통해 전체 정지를 발생시킨다.
+실행 중 `Space`, `Q`, 또는 `Ctrl+C`를 누르면 긴급 중단한다. 모터 fault,
+hard-limit 위반, CAN 송신 오류는 기존 `MotorDriver`의 latched fault를 통해
+전체 모터를 즉시 비활성화한다.
 
 ## Motion diagnostics
 
@@ -71,20 +71,29 @@ CSV에는 다음 값이 포함된다.
 - 제어 주기 `dt`, 예약 시각 대비 lateness, deadline miss
 - 관절별 command/encoder position과 trajectory/전송/encoder velocity
 - position error와 P·D·feedforward·총 제어토크 추정값
-- feedback timestamp 기준 age와 validity
+- Type 2 측정 토크, 모터 온도, fault flags와 mode state
+- position/Type 2 feedback timestamp 기준 age와 validity
 
 `trajectory_velocity_rad_s`와 `sent_velocity_rad_s`에는 실제 MIT 패킷에
 사용한 목표 속도가 기록된다. 현재 feedforward torque는 0이다.
 
-현재 기본 `position_request_period_ms: 100`에서는 엔코더가 10Hz로만
-갱신된다. 물리적 끊김과 피드백 샘플링을 구분하는 진단 실행에서는 다음
-설정을 권장한다.
+활성화 전에는 Type 17 `mechPos`를 사용해 초기 위치와 hard limit를
+검사한다. 활성화 후에는 각 Type 1 명령에 대한 Type 2 응답을 주 피드백으로
+사용하며 위치, 속도, 출력토크, 온도와 fault를 제어주기마다 갱신한다.
+`position_request_period_ms`는 비활성 상태의 Type 17 요청 주기에만
+적용된다. Type 2가 `feedback_timeout_ms` 동안 들어오지 않으면 새로운
+궤적 명령을 무시하고, 각 관절의 마지막 안전 목표 위치와 Kp/Kd 및
+feedforward torque를 유지하되 목표 속도를 0으로 보내는 Feedback Hold에
+진입한다. 피드백이 복구돼도 자동으로 움직임을 재개하지 않으며 사용자가
+`Space`를 눌러 Type 4 비활성화 명령을 보낼 때까지 홀드를 유지한다.
+
+기본 실행 설정은 다음과 같다.
 
 ```yaml
 runtime:
   control_period_ms: 20
   feedback_timeout_ms: 250
-  position_request_period_ms: 20
+  position_request_period_ms: 100
 ```
 
 로그 요약은 Python 표준 라이브러리만으로 실행할 수 있다.

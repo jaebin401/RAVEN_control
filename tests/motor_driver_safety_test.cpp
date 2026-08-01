@@ -9,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -16,6 +17,7 @@ namespace {
 
 constexpr std::uint8_t HOST_ID = 0xFD;
 constexpr std::uint8_t COMM_OPERATION_CONTROL = 1;
+constexpr std::uint8_t COMM_OPERATION_FEEDBACK = 2;
 constexpr std::uint8_t COMM_ENABLE = 3;
 constexpr std::uint8_t COMM_STOP = 4;
 constexpr std::uint8_t COMM_READ_PARAMETER = 17;
@@ -118,6 +120,62 @@ raven_control::hal::CanFrame positionFeedback(
         frame.data.data() + 4,
         &position_rad,
         sizeof(position_rad));
+    return frame;
+}
+
+std::uint16_t encodeSymmetric(double value, double absolute_limit)
+{
+    return static_cast<std::uint16_t>(
+        ((value / absolute_limit) + 1.0) * 32767.5);
+}
+
+void packU16BigEndian(
+    raven_control::hal::CanFrame& frame,
+    std::size_t offset,
+    std::uint16_t value)
+{
+    frame.data[offset] = static_cast<std::uint8_t>(value >> 8);
+    frame.data[offset + 1] =
+        static_cast<std::uint8_t>(value & 0xFF);
+}
+
+raven_control::hal::CanFrame operationFeedback(
+    std::uint8_t motor_id,
+    double position_rad,
+    double velocity_rad_s,
+    double torque_nm,
+    double temperature_celsius,
+    std::uint8_t fault_flags = 0,
+    std::uint8_t mode_state = 2)
+{
+    raven_control::hal::CanFrame frame;
+    frame.id =
+        (std::uint32_t(COMM_OPERATION_FEEDBACK) << 24) |
+        (std::uint32_t(mode_state & 0x03) << 22) |
+        (std::uint32_t(fault_flags & 0x3F) << 16) |
+        (std::uint32_t(motor_id) << 8) |
+        HOST_ID;
+    frame.dlc = 8;
+    packU16BigEndian(
+        frame,
+        0,
+        encodeSymmetric(position_rad, 4.0 * PI));
+    packU16BigEndian(
+        frame,
+        2,
+        encodeSymmetric(
+            velocity_rad_s,
+            raven_control::hal::RS02_OPERATION_MAX_VELOCITY_RAD_S));
+    packU16BigEndian(
+        frame,
+        4,
+        encodeSymmetric(
+            torque_nm,
+            raven_control::hal::RS02_OPERATION_MAX_TORQUE_NM));
+    packU16BigEndian(
+        frame,
+        6,
+        static_cast<std::uint16_t>(temperature_celsius * 10.0));
     return frame;
 }
 
@@ -321,6 +379,207 @@ void testPositionCalibration()
     }
 }
 
+void testType2OperationFeedbackIsDecodedInJointCoordinates()
+{
+    FakeCanTransport transport;
+    auto map = motorMap();
+    map[0].position_sign = -1;
+    map[0].joint_zero_at_motor_rad = 0.5;
+    map[0].joint_to_motor_ratio = 2.0;
+
+    raven_control::hal::MotorDriver driver(
+        transport,
+        map,
+        limiters(true));
+    transport.incoming.push_back(positionFeedback(1, 0.3F));
+    transport.incoming.push_back(positionFeedback(2, 0.1F));
+    transport.incoming.push_back(positionFeedback(3, -0.1F));
+    driver.poll();
+    check(
+        driver.enableAll() ==
+            raven_control::hal::MotorCommandResult::Sent,
+        "Type 17 position must bootstrap enable before Type 2 feedback");
+
+    transport.incoming.push_back(operationFeedback(
+        1,
+        0.3,
+        -1.25,
+        2.5,
+        35.6,
+        0,
+        2));
+    driver.poll();
+
+    const auto feedback = driver.feedback("joint_1");
+    check(feedback && feedback->valid,
+          "Type 2 feedback must provide a valid position");
+    check(feedback && feedback->operation_feedback_valid,
+          "Type 2 feedback must mark the full operation state valid");
+    if (feedback) {
+        check(std::abs(feedback->position_rad - 0.1) < 0.001,
+              "Type 2 position must use joint calibration");
+        check(std::abs(feedback->velocity_rad_s - 0.625) < 0.002,
+              "Type 2 velocity must use joint calibration");
+        check(std::abs(feedback->torque_nm + 5.0) < 0.003,
+              "Type 2 torque must preserve virtual work");
+        check(std::abs(feedback->temperature_celsius - 35.6) < 1e-9,
+              "Type 2 temperature must decode tenths of a degree");
+        check(feedback->fault_flags == 0,
+              "healthy Type 2 feedback must have no fault flags");
+        check(feedback->mode_state == 2,
+              "Type 2 mode state must be decoded from the CAN ID");
+    }
+
+    transport.sent.clear();
+    check(driver.requestMechanicalPositions(),
+          "Type 17 request API must remain successful after enable");
+    check(countFrames(transport, COMM_READ_PARAMETER) == 0,
+          "enabled operation must rely on Type 2 instead of polling Type 17");
+}
+
+void testType2FaultLatchesAndStopsAll()
+{
+    FakeCanTransport transport;
+    raven_control::hal::MotorDriver driver(
+        transport,
+        motorMap(),
+        limiters(true));
+    queueHealthyFeedback(transport);
+    driver.poll();
+    check(
+        driver.enableAll() ==
+            raven_control::hal::MotorCommandResult::Sent,
+        "healthy Type 17 feedback must bootstrap the Type 2 fault test");
+    transport.sent.clear();
+
+    transport.incoming.push_back(operationFeedback(
+        2,
+        0.0,
+        0.0,
+        0.0,
+        30.0,
+        1));
+    driver.poll();
+
+    check(driver.faultLatched(),
+          "nonzero Type 2 motor fault flags must latch a fault");
+    check(!driver.isEnabled(),
+          "Type 2 motor fault must disable the driver");
+    check(countFrames(transport, COMM_STOP) == 3,
+          "Type 2 motor fault must stop every configured motor");
+}
+
+void testType2HardLimitLatchesAndStopsAll()
+{
+    FakeCanTransport transport;
+    raven_control::hal::MotorDriver driver(
+        transport,
+        motorMap(),
+        limiters(true));
+    queueHealthyFeedback(transport);
+    driver.poll();
+    check(
+        driver.enableAll() ==
+            raven_control::hal::MotorCommandResult::Sent,
+        "healthy feedback must bootstrap the Type 2 limit test");
+    transport.sent.clear();
+
+    transport.incoming.push_back(operationFeedback(
+        2,
+        1.1,
+        0.0,
+        0.0,
+        30.0));
+    driver.poll();
+
+    check(driver.faultLatched(),
+          "Type 2 hard-limit position must latch a fault");
+    check(!driver.isEnabled(),
+          "Type 2 hard-limit fault must disable the driver");
+    check(countFrames(transport, COMM_STOP) == 3,
+          "Type 2 hard-limit fault must stop every configured motor");
+}
+
+void testMissingType2FeedbackEntersPositionHold()
+{
+    FakeCanTransport transport;
+    raven_control::hal::MotorDriver driver(
+        transport,
+        motorMap(),
+        limiters(true),
+        HOST_ID,
+        std::chrono::milliseconds(20));
+    queueHealthyFeedback(transport);
+    driver.poll();
+    check(
+        driver.enableAll() ==
+            raven_control::hal::MotorCommandResult::Sent,
+        "Type 17 feedback must allow initial enable");
+
+    check(
+        driver.sendMitCommand(
+            "joint_1", 0.2, 0.4, 8.0, 0.15, 0.3) ==
+            raven_control::hal::MotorCommandResult::Sent,
+        "joint 1 must cache a safe MIT command");
+    check(
+        driver.sendMitCommand(
+            "joint_2", -0.2, -0.4, 9.0, 0.2, -0.3) ==
+            raven_control::hal::MotorCommandResult::Sent,
+        "joint 2 must cache a safe MIT command");
+    check(
+        driver.sendMitCommand(
+            "joint_3", 0.1, 0.2, 10.0, 0.25, 0.1) ==
+            raven_control::hal::MotorCommandResult::Sent,
+        "joint 3 must cache a safe MIT command");
+    transport.sent.clear();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    check(driver.requestMechanicalPositions(),
+          "enabled Type 17 request must remain a no-op success");
+    check(
+        driver.sendMitCommand(
+            "joint_1", 0.8, 2.0, 20.0, 1.0, 1.0) ==
+            raven_control::hal::MotorCommandResult::FeedbackHold,
+        "missing Type 2 feedback must enter position hold");
+    check(driver.feedbackHoldLatched(),
+          "feedback hold must remain latched");
+    check(driver.isEnabled(),
+          "feedback hold must keep the motors enabled");
+    check(!driver.faultLatched(),
+          "feedback hold alone must not latch a shutdown fault");
+    check(countFrames(transport, COMM_STOP) == 0,
+          "feedback hold must not send Type 4 stop frames");
+    check(countFrames(transport, COMM_OPERATION_CONTROL) == 1,
+          "feedback hold must continue sending Type 1 commands");
+    check(
+        std::abs(decodePosition(transport.sent.back()) - 0.2) < 0.001,
+        "feedback hold must reuse the last safe position");
+    check(
+        std::abs(decodeVelocity(transport.sent.back())) < 0.002,
+        "feedback hold must force desired velocity to zero");
+
+    check(
+        driver.sendMitCommand(
+            "joint_2", 0.7, 3.0, 30.0, 2.0, 2.0) ==
+            raven_control::hal::MotorCommandResult::FeedbackHold,
+        "latched feedback hold must ignore later motion commands");
+    check(
+        std::abs(decodePosition(transport.sent.back()) + 0.2) < 0.001,
+        "latched hold must preserve each joint's cached position");
+    check(
+        std::abs(decodeVelocity(transport.sent.back())) < 0.002,
+        "every latched hold command must use zero velocity");
+
+    check(driver.stopAll(),
+          "explicit user stop must disable all motors from hold");
+    check(!driver.isEnabled(),
+          "explicit stop must leave the driver disabled");
+    check(!driver.feedbackHoldLatched(),
+          "explicit stop must clear feedback hold state");
+    check(countFrames(transport, COMM_STOP) == 3,
+          "explicit stop must send one Type 4 frame per motor");
+}
+
 void testClampedTargetStopsOutwardDesiredVelocity()
 {
     FakeCanTransport transport;
@@ -522,6 +781,10 @@ int main()
     testTargetIsClampedBeforeCanWrite();
     testOfficialGainEncoding();
     testPositionCalibration();
+    testType2OperationFeedbackIsDecodedInJointCoordinates();
+    testType2FaultLatchesAndStopsAll();
+    testType2HardLimitLatchesAndStopsAll();
+    testMissingType2FeedbackEntersPositionHold();
     testClampedTargetStopsOutwardDesiredVelocity();
     testOutOfRangeVelocityLatchesAndStopsAll();
     testOutOfRangeGainLatchesAndStopsAll();

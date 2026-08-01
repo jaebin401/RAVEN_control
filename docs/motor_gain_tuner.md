@@ -38,8 +38,10 @@ cmake --build build --target motor_gain_tuner -j"$(nproc)"
 ## Safety behavior
 
 - enable 전 fresh feedback과 모든 joint limit의 `confirmed` 상태를 검사한다.
-- hard-limit 위반, stale feedback, CAN 오류, 범위를 벗어난 gain은 전체
-  모터 stop과 latched fault를 발생시킨다.
+- Type 2 피드백 timeout은 마지막 안전 위치를 유지하는 Feedback Hold로
+  이어지며, `Space`를 누르면 전체 모터를 비활성화한다.
+- hard-limit 위반, 모터 fault, CAN 오류, 범위를 벗어난 gain은 전체 모터
+  stop과 latched fault를 발생시킨다.
 - 목표각은 joint soft limit에서 clamp된다.
 - soft limit에서 목표각이 clamp되면 바깥쪽 목표 속도는 0으로 전송된다.
 - gain 조정은 실행 중 즉시 적용되지만 `V`를 누르기 전에는 파일에 저장되지

@@ -228,6 +228,8 @@ void printStatus(
     const std::array<ControlState, JOINTS.size()>& states)
 {
     std::cout << "\r\033[K[KEY] ";
+    if (driver.feedbackHoldLatched())
+        std::cout << "\033[33mFEEDBACK HOLD\033[0m | ";
     for (std::size_t index = 0; index < JOINTS.size(); ++index) {
         const auto feedback = driver.feedback(JOINTS[index].name);
         const double actual_deg =
@@ -317,7 +319,9 @@ void controlLoop(
                 if (result !=
                         raven_control::hal::MotorCommandResult::Sent &&
                     result != raven_control::hal::
-                        MotorCommandResult::TargetClamped) {
+                        MotorCommandResult::TargetClamped &&
+                    result != raven_control::hal::
+                        MotorCommandResult::FeedbackHold) {
                     running.store(false);
                     break;
                 }

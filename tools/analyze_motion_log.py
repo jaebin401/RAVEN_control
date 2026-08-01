@@ -82,7 +82,14 @@ def print_summary(path, rows, joints):
         control_torque = finite_values(
             rows, f"{joint}.estimated_control_torque_nm"
         )
+        measured_torque = finite_values(rows, f"{joint}.measured_torque_nm")
+        temperatures = finite_values(
+            rows, f"{joint}.motor_temperature_celsius"
+        )
         ages = finite_values(rows, f"{joint}.feedback_age_ms")
+        operation_ages = finite_values(
+            rows, f"{joint}.operation_feedback_age_ms"
+        )
         print(f"\n{joint}")
         if errors:
             print(
@@ -105,12 +112,31 @@ def print_summary(path, rows, joints):
                 "  estimated |control torque| max: "
                 f"{max(abs(value) for value in control_torque):.3f} N.m"
             )
+        if measured_torque:
+            print(
+                "  Type 2 measured torque [N.m]: "
+                f"mean={fmean(measured_torque):.3f}, "
+                f"max_abs={max(abs(value) for value in measured_torque):.3f}"
+            )
+        if temperatures:
+            print(
+                "  Type 2 motor temperature [C]: "
+                f"mean={fmean(temperatures):.1f}, "
+                f"max={max(temperatures):.1f}"
+            )
         if ages:
             print(
                 "  feedback age [ms]: "
                 f"median={percentile(ages, 50):.3f}, "
                 f"p99={percentile(ages, 99):.3f}, "
                 f"max={max(ages):.3f}"
+            )
+        if operation_ages:
+            print(
+                "  Type 2 feedback age [ms]: "
+                f"median={percentile(operation_ages, 50):.3f}, "
+                f"p99={percentile(operation_ages, 99):.3f}, "
+                f"max={max(operation_ages):.3f}"
             )
 
 
@@ -176,7 +202,11 @@ def save_plot(path, rows, joints, output_path, show):
         velocity_axis.plot(
             time_s,
             actual_velocity,
-            label="encoder estimate",
+            label=(
+                "Type 2 measured"
+                if f"{joint}.operation_feedback_valid" in rows[0]
+                else "encoder estimate"
+            ),
             linewidth=1.0,
         )
         velocity_axis.set_ylabel("velocity [rad/s]")
@@ -212,9 +242,19 @@ def save_plot(path, rows, joints, output_path, show):
             label=joint,
             linewidth=1.0,
         )
-    torque_axis.set_ylabel("estimated torque [N.m]")
+        measured_key = f"{joint}.measured_torque_nm"
+        if measured_key in rows[0]:
+            measured_torque = [float(row[measured_key]) for row in rows]
+            torque_axis.plot(
+                time_s,
+                measured_torque,
+                label=f"{joint} measured",
+                linewidth=0.9,
+                linestyle="--",
+            )
+    torque_axis.set_ylabel("torque [N.m]")
     torque_axis.set_xlabel("elapsed time [s]")
-    torque_axis.set_title("Estimated P + D + feedforward torque")
+    torque_axis.set_title("Estimated command and Type 2 measured torque")
     torque_axis.grid(True, alpha=0.3)
     torque_axis.legend(loc="best")
 

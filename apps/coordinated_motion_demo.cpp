@@ -468,12 +468,13 @@ void printStatus(
     std::cout << std::flush;
 }
 
-void sendTargets(
+bool sendTargets(
     raven_control::hal::MotorDriver& driver,
     const JointBindings& bindings,
     const JointPositions& target,
     const JointPositions& target_velocity)
 {
+    bool feedback_hold = false;
     for (std::size_t index = 0; index < JOINTS.size(); ++index) {
         const auto result = driver.sendMitCommand(
             JOINTS[index].name,
@@ -482,14 +483,18 @@ void sendTargets(
             bindings[index]->position_control.kp,
             bindings[index]->position_control.kd,
             0.0);
-        if (result !=
-            raven_control::hal::MotorCommandResult::Sent) {
+        if (result ==
+            raven_control::hal::MotorCommandResult::FeedbackHold) {
+            feedback_hold = true;
+        } else if (result !=
+                   raven_control::hal::MotorCommandResult::Sent) {
             throw std::runtime_error(
                 "MIT command failed on '" +
                 std::string(JOINTS[index].name) +
                 "': " + raven_control::hal::toString(result));
         }
     }
+    return feedback_hold;
 }
 
 void recordDiagnosticSample(
@@ -533,6 +538,27 @@ void recordDiagnosticSample(
                 std::chrono::duration<double, std::milli>(
                     observed_at - feedback->received_at).count();
 
+            const bool operation_feedback_fresh =
+                feedback->operation_feedback_valid &&
+                observed_at - feedback->operation_received_at <=
+                    config.feedback_timeout;
+            if (operation_feedback_fresh) {
+                joint_sample.operation_feedback_valid = true;
+                joint_sample.operation_feedback_age_ms =
+                    std::chrono::duration<double, std::milli>(
+                        observed_at -
+                        feedback->operation_received_at).count();
+                joint_sample.measured_torque_nm = feedback->torque_nm;
+                joint_sample.motor_temperature_celsius =
+                    feedback->temperature_celsius;
+                joint_sample.motor_fault_flags = feedback->fault_flags;
+                joint_sample.motor_mode_state = feedback->mode_state;
+            } else {
+                joint_sample.operation_feedback_age_ms = nan;
+                joint_sample.measured_torque_nm = nan;
+                joint_sample.motor_temperature_celsius = nan;
+            }
+
             if (state.feedback_initialized[index] &&
                 feedback->received_at >
                     state.previous_feedback_at[index]) {
@@ -559,7 +585,9 @@ void recordDiagnosticSample(
             }
 
             joint_sample.actual_velocity_rad_s =
-                state.estimated_actual_velocity[index];
+                operation_feedback_fresh
+                ? feedback->velocity_rad_s
+                : state.estimated_actual_velocity[index];
             joint_sample.position_error_rad =
                 target[index] - feedback->position_rad;
             joint_sample.estimated_p_torque_nm =
@@ -580,12 +608,77 @@ void recordDiagnosticSample(
             joint_sample.estimated_d_torque_nm = nan;
             joint_sample.estimated_control_torque_nm = nan;
             joint_sample.feedback_age_ms = nan;
+            joint_sample.operation_feedback_age_ms = nan;
+            joint_sample.measured_torque_nm = nan;
+            joint_sample.motor_temperature_celsius = nan;
         }
 
         sample.joints[index] = joint_sample;
     }
 
     logger.record(std::move(sample));
+}
+
+void holdAfterFeedbackLossUntilDisabled(
+    raven_control::hal::MotorDriver& driver,
+    const raven_control::config::MotorRuntimeConfig& config,
+    const JointBindings& bindings,
+    const JointPositions& last_target,
+    raven_control::logging::MotionLogger& logger,
+    DiagnosticState& diagnostic_state)
+{
+    std::cout
+        << "\nType 2 feedback lost: "
+        << driver.feedbackHoldReason() << '\n'
+        << "Motion is frozen at the last safe target.\n"
+        << "The motors remain enabled in MIT position hold.\n"
+        << "SPACE: disable all motors and exit\n"
+        << "Q: emergency stop and exit\n"
+        << std::flush;
+
+    auto next_cycle = std::chrono::steady_clock::now();
+    auto next_status = next_cycle;
+    const JointPositions zero_velocity{};
+
+    while (!stop_requested) {
+        const auto now = std::chrono::steady_clock::now();
+        if (keyAvailable()) {
+            const std::optional<char> key = readKey();
+            if (key &&
+                (*key == ' ' || *key == 'q' || *key == 'Q')) {
+                return;
+            }
+        }
+
+        (void)driver.poll();
+        if (driver.faultLatched())
+            throw std::runtime_error(driver.faultReason());
+
+        (void)sendTargets(
+            driver,
+            bindings,
+            last_target,
+            zero_velocity);
+        recordDiagnosticSample(
+            logger,
+            diagnostic_state,
+            "Feedback Hold",
+            next_cycle,
+            now,
+            config,
+            bindings,
+            driver,
+            last_target,
+            zero_velocity);
+
+        if (now >= next_status) {
+            printStatus("FB Hold", driver, last_target);
+            next_status = now + std::chrono::milliseconds(200);
+        }
+
+        next_cycle += config.control_period;
+        std::this_thread::sleep_until(next_cycle);
+    }
 }
 
 bool runPhase(
@@ -640,7 +733,8 @@ bool runPhase(
                 start[index] + blend * displacement;
             target_velocity[index] = blend_rate * displacement;
         }
-        sendTargets(driver, bindings, target, target_velocity);
+        const bool feedback_hold =
+            sendTargets(driver, bindings, target, target_velocity);
         recordDiagnosticSample(
             logger,
             diagnostic_state,
@@ -652,6 +746,17 @@ bool runPhase(
             driver,
             target,
             target_velocity);
+
+        if (feedback_hold) {
+            holdAfterFeedbackLossUntilDisabled(
+                driver,
+                config,
+                bindings,
+                target,
+                logger,
+                diagnostic_state);
+            return false;
+        }
 
         if (now >= next_status) {
             printStatus(phase_name, driver, target);
@@ -728,7 +833,7 @@ bool holdHomeUntilDisabled(
         if (driver.faultLatched())
             throw std::runtime_error(driver.faultReason());
 
-        sendTargets(driver, bindings, home, zero_velocity);
+        (void)sendTargets(driver, bindings, home, zero_velocity);
         recordDiagnosticSample(
             logger,
             diagnostic_state,
@@ -854,7 +959,7 @@ int main(int argc, char* argv[])
         }
         if (completed) {
             const JointPositions zero_velocity{};
-            sendTargets(driver, bindings, home, zero_velocity);
+            (void)sendTargets(driver, bindings, home, zero_velocity);
             (void)holdHomeUntilDisabled(
                 driver,
                 motor_config,

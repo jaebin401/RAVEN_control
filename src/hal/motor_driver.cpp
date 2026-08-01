@@ -11,6 +11,7 @@ namespace raven_control::hal {
 namespace {
 
 constexpr std::uint8_t COMM_OPERATION_CONTROL = 1;
+constexpr std::uint8_t COMM_OPERATION_FEEDBACK = 2;
 constexpr std::uint8_t COMM_ENABLE = 3;
 constexpr std::uint8_t COMM_STOP = 4;
 constexpr std::uint8_t COMM_READ_PARAMETER = 17;
@@ -62,6 +63,15 @@ void packU16BigEndian(
     data[offset + 1] = static_cast<std::uint8_t>(value & 0xFF);
 }
 
+std::uint16_t unpackU16BigEndian(
+    const std::array<std::uint8_t, 8>& data,
+    std::size_t offset)
+{
+    return
+        (std::uint16_t(data[offset]) << 8) |
+        std::uint16_t(data[offset + 1]);
+}
+
 double unpackFloatLittleEndian(
     const std::array<std::uint8_t, 8>& data,
     std::size_t offset)
@@ -87,6 +97,15 @@ std::uint16_t encodeUnsigned(double value, double maximum)
     const double clamped = std::clamp(value, 0.0, maximum);
     const double normalized = (clamped / maximum) * 65535.0;
     return static_cast<std::uint16_t>(normalized);
+}
+
+double decodeSymmetric(
+    std::uint16_t encoded,
+    double absolute_limit)
+{
+    return
+        ((static_cast<double>(encoded) / 65535.0) * 2.0 - 1.0) *
+        absolute_limit;
 }
 
 double motorToJointPosition(
@@ -117,6 +136,14 @@ double jointToMotorVelocity(
            joint_velocity_rad_s;
 }
 
+double motorToJointVelocity(
+    const JointMotorConfig& motor,
+    double motor_velocity_rad_s)
+{
+    return static_cast<double>(motor.position_sign) *
+           motor_velocity_rad_s / motor.joint_to_motor_ratio;
+}
+
 double jointToMotorTorque(
     const JointMotorConfig& motor,
     double joint_torque_nm)
@@ -124,6 +151,14 @@ double jointToMotorTorque(
     // Preserve virtual work for q_motor = sign * ratio * q_joint.
     return static_cast<double>(motor.position_sign) *
            joint_torque_nm / motor.joint_to_motor_ratio;
+}
+
+double motorToJointTorque(
+    const JointMotorConfig& motor,
+    double motor_torque_nm)
+{
+    return static_cast<double>(motor.position_sign) *
+           motor.joint_to_motor_ratio * motor_torque_nm;
 }
 
 }  // namespace
@@ -135,6 +170,8 @@ const char* toString(MotorCommandResult result) noexcept
         return "sent";
     case MotorCommandResult::TargetClamped:
         return "target clamped";
+    case MotorCommandResult::FeedbackHold:
+        return "feedback-loss position hold";
     case MotorCommandResult::NotEnabled:
         return "motors are not enabled";
     case MotorCommandResult::UnknownJoint:
@@ -230,7 +267,8 @@ MotorDriver::MotorDriver(
             Channel{
                 std::move(motor),
                 std::move(limiter->second),
-                MotorFeedback{}});
+                MotorFeedback{},
+                LastMitCommand{}});
         motor_to_joint_.emplace(motor_id, joint_name);
     }
 }
@@ -258,6 +296,13 @@ MotorCommandResult MotorDriver::enableAll()
         }
     }
 
+    feedback_hold_latched_ = false;
+    feedback_hold_reason_.clear();
+    for (auto& entry : channels_) {
+        entry.second.feedback.operation_feedback_valid = false;
+        entry.second.last_mit_command = LastMitCommand{};
+    }
+
     for (const auto& entry : channels_) {
         if (!sendEnable(entry.second.motor.motor_id)) {
             latchFaultUnlocked(
@@ -279,6 +324,11 @@ bool MotorDriver::stopAll()
 bool MotorDriver::requestMechanicalPositions()
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    // Type 17 is the startup/bootstrap position source. Once enabled,
+    // Type 2 replies to Type 1 commands become the primary feedback.
+    if (enabled_)
+        return true;
+
     bool success = true;
     for (const auto& entry : channels_) {
         success =
@@ -329,6 +379,15 @@ MotorCommandResult MotorDriver::sendMitCommand(
         return MotorCommandResult::UnknownJoint;
     Channel& channel = channel_entry->second;
 
+    if (feedback_hold_latched_) {
+        if (!sendFeedbackHoldUnlocked(channel)) {
+            latchFaultUnlocked(
+                "CAN feedback-hold command failed on " + joint_name);
+            return MotorCommandResult::CanWriteFailure;
+        }
+        return MotorCommandResult::FeedbackHold;
+    }
+
     if (!std::isfinite(target_position_rad) ||
         !std::isfinite(target_velocity_rad_s) ||
         !std::isfinite(kp) ||
@@ -343,17 +402,18 @@ MotorCommandResult MotorDriver::sendMitCommand(
             "Out-of-range position gain on " + joint_name);
         return MotorCommandResult::InvalidCommand;
     }
-    if (!channel.feedback.valid) {
-        latchFaultUnlocked(
-            "Missing position feedback on " + joint_name);
-        return MotorCommandResult::InvalidFeedback;
-    }
-    if (!feedbackFresh(
-            channel.feedback,
-            std::chrono::steady_clock::now())) {
-        latchFaultUnlocked(
-            "Stale position feedback on " + joint_name);
-        return MotorCommandResult::StaleFeedback;
+    const auto now = std::chrono::steady_clock::now();
+    for (const auto& entry : channels_) {
+        if (!entry.second.feedback.valid) {
+            return enterFeedbackHoldUnlocked(
+                "Missing Type 2 feedback on " + entry.first,
+                channel);
+        }
+        if (!feedbackFresh(entry.second.feedback, now)) {
+            return enterFeedbackHoldUnlocked(
+                "Stale Type 2 feedback on " + entry.first,
+                channel);
+        }
     }
     if (channel.limiter.isHardViolation(
             channel.feedback.position_rad)) {
@@ -390,9 +450,11 @@ MotorCommandResult MotorDriver::sendMitCommand(
             "Out-of-range MIT feedforward torque on " + joint_name);
         return MotorCommandResult::InvalidCommand;
     }
+    const double motor_position =
+        jointToMotorPosition(channel.motor, *safe_target);
     if (!sendMitFrame(
             channel.motor.motor_id,
-            jointToMotorPosition(channel.motor, *safe_target),
+            motor_position,
             motor_velocity,
             kp,
             kd,
@@ -400,6 +462,13 @@ MotorCommandResult MotorDriver::sendMitCommand(
         latchFaultUnlocked("CAN MIT command failed on " + joint_name);
         return MotorCommandResult::CanWriteFailure;
     }
+
+    channel.last_mit_command = LastMitCommand{
+        motor_position,
+        kp,
+        kd,
+        motor_torque,
+        true};
 
     return *safe_target == target_position_rad
         ? MotorCommandResult::Sent
@@ -433,6 +502,18 @@ bool MotorDriver::isEnabled() const
 {
     std::lock_guard<std::mutex> lock(mutex_);
     return enabled_;
+}
+
+bool MotorDriver::feedbackHoldLatched() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return feedback_hold_latched_;
+}
+
+std::string MotorDriver::feedbackHoldReason() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return feedback_hold_reason_;
 }
 
 bool MotorDriver::faultLatched() const
@@ -529,6 +610,51 @@ bool MotorDriver::sendMitFrame(
     return transport_.send(frame);
 }
 
+bool MotorDriver::allLastMitCommandsValidUnlocked() const
+{
+    return std::all_of(
+        channels_.begin(),
+        channels_.end(),
+        [](const auto& entry) {
+            return entry.second.last_mit_command.valid;
+        });
+}
+
+bool MotorDriver::sendFeedbackHoldUnlocked(Channel& channel)
+{
+    const LastMitCommand& command = channel.last_mit_command;
+    return command.valid &&
+           sendMitFrame(
+               channel.motor.motor_id,
+               command.motor_position_rad,
+               0.0,
+               command.kp,
+               command.kd,
+               command.motor_torque_nm);
+}
+
+MotorCommandResult MotorDriver::enterFeedbackHoldUnlocked(
+    std::string reason,
+    Channel& channel)
+{
+    if (!allLastMitCommandsValidUnlocked()) {
+        latchFaultUnlocked(
+            std::move(reason) +
+            "; no complete safe command snapshot is available");
+        return MotorCommandResult::StaleFeedback;
+    }
+
+    feedback_hold_latched_ = true;
+    feedback_hold_reason_ = std::move(reason);
+    if (!sendFeedbackHoldUnlocked(channel)) {
+        latchFaultUnlocked(
+            "CAN feedback-hold command failed on " +
+            channel.motor.joint_name);
+        return MotorCommandResult::CanWriteFailure;
+    }
+    return MotorCommandResult::FeedbackHold;
+}
+
 bool MotorDriver::stopAllUnlocked()
 {
     bool success = true;
@@ -538,6 +664,10 @@ bool MotorDriver::stopAllUnlocked()
             success;
     }
     enabled_ = false;
+    feedback_hold_latched_ = false;
+    feedback_hold_reason_.clear();
+    for (auto& entry : channels_)
+        entry.second.last_mit_command = LastMitCommand{};
     return success;
 }
 
@@ -550,11 +680,67 @@ void MotorDriver::latchFaultUnlocked(std::string reason)
 
 void MotorDriver::processFrameUnlocked(const CanFrame& frame)
 {
-    if (communicationType(frame) != COMM_READ_PARAMETER ||
-        destinationHostId(frame) != host_id_ ||
-        frame.dlc != 8) {
+    if (destinationHostId(frame) != host_id_ || frame.dlc != 8)
+        return;
+
+    const std::uint8_t communication_type = communicationType(frame);
+    if (communication_type == COMM_OPERATION_FEEDBACK) {
+        const auto joint = motor_to_joint_.find(sourceMotorId(frame));
+        if (joint == motor_to_joint_.end())
+            return;
+
+        Channel& channel = channels_.at(joint->second);
+        const double motor_position_rad = decodeSymmetric(
+            unpackU16BigEndian(frame.data, 0),
+            POSITION_SCALE_RAD);
+        const double motor_velocity_rad_s = decodeSymmetric(
+            unpackU16BigEndian(frame.data, 2),
+            RS02_OPERATION_MAX_VELOCITY_RAD_S);
+        const double motor_torque_nm = decodeSymmetric(
+            unpackU16BigEndian(frame.data, 4),
+            RS02_OPERATION_MAX_TORQUE_NM);
+        const auto raw_temperature = static_cast<std::int16_t>(
+            unpackU16BigEndian(frame.data, 6));
+        const auto received_at = std::chrono::steady_clock::now();
+
+        channel.feedback.position_rad = motorToJointPosition(
+            channel.motor,
+            motor_position_rad);
+        channel.feedback.velocity_rad_s = motorToJointVelocity(
+            channel.motor,
+            motor_velocity_rad_s);
+        channel.feedback.torque_nm = motorToJointTorque(
+            channel.motor,
+            motor_torque_nm);
+        channel.feedback.temperature_celsius =
+            static_cast<double>(raw_temperature) / 10.0;
+        channel.feedback.fault_flags = static_cast<std::uint8_t>(
+            (frame.id >> 16) & 0x3F);
+        channel.feedback.mode_state = static_cast<std::uint8_t>(
+            (frame.id >> 22) & 0x03);
+        channel.feedback.valid = true;
+        channel.feedback.operation_feedback_valid = true;
+        channel.feedback.received_at = received_at;
+        channel.feedback.operation_received_at = received_at;
+
+        if (channel.feedback.fault_flags != 0) {
+            latchFaultUnlocked(
+                "RS02 Type 2 fault flags " +
+                std::to_string(channel.feedback.fault_flags) +
+                " on " + joint->second);
+            return;
+        }
+        if (channel.limiter.isHardViolation(
+                channel.feedback.position_rad)) {
+            latchFaultUnlocked(
+                "Hard-limit violation on " + joint->second);
+        }
         return;
     }
+
+    if (communication_type != COMM_READ_PARAMETER)
+        return;
+
     if (frame.data[0] !=
             static_cast<std::uint8_t>(
                 PARAM_MECHANICAL_POSITION & 0xFF) ||

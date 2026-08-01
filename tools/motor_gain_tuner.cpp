@@ -613,6 +613,13 @@ int main(int argc, char* argv[])
                             message =
                                 "Target clamped by joint limit";
                         } else if (
+                            result ==
+                            raven_control::hal::
+                                MotorCommandResult::FeedbackHold) {
+                            message =
+                                "TYPE 2 LOST: holding last position; "
+                                "press SPACE to disable";
+                        } else if (
                             result !=
                             raven_control::hal::
                                 MotorCommandResult::Sent) {

@@ -30,13 +30,21 @@ struct JointMotorConfig {
 
 struct MotorFeedback {
     double position_rad = 0.0;
+    double velocity_rad_s = 0.0;
+    double torque_nm = 0.0;
+    double temperature_celsius = 0.0;
+    std::uint8_t fault_flags = 0;
+    std::uint8_t mode_state = 0;
     bool valid = false;
+    bool operation_feedback_valid = false;
     std::chrono::steady_clock::time_point received_at{};
+    std::chrono::steady_clock::time_point operation_received_at{};
 };
 
 enum class MotorCommandResult {
     Sent,
     TargetClamped,
+    FeedbackHold,
     NotEnabled,
     UnknownJoint,
     InvalidCommand,
@@ -80,14 +88,25 @@ public:
         const std::string& joint_name) const;
     [[nodiscard]] bool allFeedbackValid() const;
     [[nodiscard]] bool isEnabled() const;
+    [[nodiscard]] bool feedbackHoldLatched() const;
+    [[nodiscard]] std::string feedbackHoldReason() const;
     [[nodiscard]] bool faultLatched() const;
     [[nodiscard]] std::string faultReason() const;
 
 private:
+    struct LastMitCommand {
+        double motor_position_rad = 0.0;
+        double kp = 0.0;
+        double kd = 0.0;
+        double motor_torque_nm = 0.0;
+        bool valid = false;
+    };
+
     struct Channel {
         JointMotorConfig motor;
         safety::JointLimiter limiter;
         MotorFeedback feedback;
+        LastMitCommand last_mit_command;
     };
 
     using ChannelMap = std::unordered_map<std::string, Channel>;
@@ -106,6 +125,11 @@ private:
         double kp,
         double kd,
         double torque_nm);
+    [[nodiscard]] bool allLastMitCommandsValidUnlocked() const;
+    [[nodiscard]] bool sendFeedbackHoldUnlocked(Channel& channel);
+    [[nodiscard]] MotorCommandResult enterFeedbackHoldUnlocked(
+        std::string reason,
+        Channel& channel);
     [[nodiscard]] bool stopAllUnlocked();
     void latchFaultUnlocked(std::string reason);
     void processFrameUnlocked(const CanFrame& frame);
@@ -116,6 +140,8 @@ private:
     std::uint8_t host_id_;
     std::chrono::milliseconds feedback_timeout_;
     bool enabled_ = false;
+    bool feedback_hold_latched_ = false;
+    std::string feedback_hold_reason_;
     bool fault_latched_ = false;
     std::string fault_reason_;
     mutable std::mutex mutex_;
