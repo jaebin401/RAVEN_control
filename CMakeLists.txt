@@ -219,7 +219,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
     target_link_libraries(
         coordinated_motion_demo
-        PRIVATE raven_hal raven_logging
+        PRIVATE raven_hal raven_logging raven_dynamics
     )
     raven_enable_warnings(coordinated_motion_demo)
 

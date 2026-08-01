@@ -28,6 +28,7 @@ struct MotorRuntimeConfig {
     std::chrono::milliseconds control_period{20};
     std::chrono::milliseconds feedback_timeout{250};
     std::chrono::milliseconds position_request_period{100};
+    bool gravity_compensation_enabled = true;
     std::vector<JointMotorRuntimeConfig> joints;
 
     void validate() const;

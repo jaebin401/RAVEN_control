@@ -4,6 +4,7 @@ runtime:
   control_period_ms: 20
   feedback_timeout_ms: 250
   position_request_period_ms: 100
+  gravity_compensation_enabled: true
 
 joints:
   shoulder_Joint:

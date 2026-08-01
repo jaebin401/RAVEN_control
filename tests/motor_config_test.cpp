@@ -65,6 +65,8 @@ void testValidConfig()
 {
     const auto config = validConfig();
     config.validate();
+    check(config.gravity_compensation_enabled,
+          "gravity compensation must default to enabled");
     check(config.findJoint("joint_2") != nullptr,
           "configured joint must be found");
     check(config.findJoint("missing") == nullptr,

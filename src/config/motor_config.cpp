@@ -200,6 +200,17 @@ MotorRuntimeConfig loadMotorRuntimeConfig(
         requiredMilliseconds(runtime, "feedback_timeout_ms");
     config.position_request_period =
         requiredMilliseconds(runtime, "position_request_period_ms");
+    if (const YAML::Node enabled =
+            runtime["gravity_compensation_enabled"]) {
+        try {
+            config.gravity_compensation_enabled = enabled.as<bool>();
+        } catch (const YAML::Exception& error) {
+            throw std::runtime_error(
+                "Runtime config has invalid "
+                "'gravity_compensation_enabled': " +
+                std::string(error.what()));
+        }
+    }
 
     const YAML::Node joints = root["joints"];
     if (!joints || !joints.IsMap()) {
@@ -293,6 +304,9 @@ void saveMotorRuntimeConfig(
     output << YAML::Key << "position_request_period_ms"
            << YAML::Value
            << config.position_request_period.count();
+    output << YAML::Key << "gravity_compensation_enabled"
+           << YAML::Value
+           << config.gravity_compensation_enabled;
     output << YAML::EndMap;
 
     output << YAML::Key << "joints" << YAML::Value
