@@ -76,6 +76,14 @@ using JointBindings = std::array<
 using JointPositions = std::array<double, JOINTS.size()>;
 using JointTorques = std::array<double, JOINTS.size()>;
 
+constexpr std::array<double, JOINTS.size()>
+
+    GRAVITY_COMPENSATION_SCALE{
+        1.0,   // base
+        -1.0,  // UpperArm
+        -1.0   // ForeArm
+    };
+
 struct GravityControlState {
     explicit GravityControlState(bool initially_enabled)
         : compensator(
@@ -295,7 +303,9 @@ JointTorques gravityCompensationTorque(
         gravity.compensator.compute(joint_positions);
     for (std::size_t index = 0; index < JOINTS.size(); ++index) {
         compensation[index] =
-            gravity.blend * full_compensation[index];
+            gravity.blend 
+            * GRAVITY_COMPENSATION_SCALE[index]
+            * full_compensation[index];
     }
     return compensation;
 }
