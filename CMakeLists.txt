@@ -232,7 +232,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             )
             target_link_libraries(
                 raven_joint_state_bridge
-                PRIVATE raven_telemetry raven_hal
+                raven_telemetry
+                raven_hal
             )
             ament_target_dependencies(
                 raven_joint_state_bridge
