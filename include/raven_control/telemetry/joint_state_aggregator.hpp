@@ -27,6 +27,7 @@ struct JointStateSample {
 struct JointStateSnapshot {
     std::vector<JointStateSample> joints;
     std::chrono::steady_clock::time_point captured_at{};
+    bool velocity_and_effort_valid = false;
 };
 
 // Read-only aggregation of Type 2 feedback. This class never owns a CAN
@@ -41,6 +42,11 @@ public:
         std::chrono::steady_clock::time_point received_at =
             std::chrono::steady_clock::now());
 
+    [[nodiscard]] bool ingest(
+        const hal::Rs02MechanicalPositionFeedback& feedback,
+        std::chrono::steady_clock::time_point received_at =
+            std::chrono::steady_clock::now());
+
     [[nodiscard]] std::optional<JointStateSnapshot> snapshot(
         std::chrono::steady_clock::time_point now,
         std::chrono::milliseconds freshness_timeout) const;
@@ -48,10 +54,16 @@ public:
     [[nodiscard]] std::size_t jointCount() const noexcept;
 
 private:
+    enum class FeedbackSource {
+        None,
+        MechanicalPosition,
+        Operation,
+    };
+
     struct Channel {
         config::JointMotorRuntimeConfig config;
         JointStateSample sample;
-        bool valid = false;
+        FeedbackSource source = FeedbackSource::None;
     };
 
     std::vector<Channel> channels_;

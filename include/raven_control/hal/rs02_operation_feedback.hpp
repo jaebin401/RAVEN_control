@@ -22,10 +22,22 @@ struct Rs02OperationFeedback {
     std::uint8_t mode_state = 0;
 };
 
+struct Rs02MechanicalPositionFeedback {
+    std::uint8_t motor_id = 0;
+    double motor_position_rad = 0.0;
+};
+
 // Decodes communication Type 2 without sending anything to the CAN bus.
 // Returns nullopt for unrelated, malformed, or differently addressed frames.
 [[nodiscard]] std::optional<Rs02OperationFeedback>
 decodeRs02OperationFeedback(
+    const CanFrame& frame,
+    std::uint8_t host_id = 0xFD) noexcept;
+
+// Decodes a communication Type 17 response for mechanical-position parameter
+// 0x7019. This is the position source while the actuator is disabled.
+[[nodiscard]] std::optional<Rs02MechanicalPositionFeedback>
+decodeRs02MechanicalPositionFeedback(
     const CanFrame& frame,
     std::uint8_t host_id = 0xFD) noexcept;
 

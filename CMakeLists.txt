@@ -4,7 +4,7 @@ project(RAVEN_control VERSION 0.2.0 LANGUAGES CXX)
 
 option(
     RAVEN_BUILD_ROS2_BRIDGE
-    "Build the read-only Type 2 to ROS 2 joint-state bridge"
+    "Build the read-only RS02 feedback to ROS 2 joint-state bridge"
     ON
 )
 

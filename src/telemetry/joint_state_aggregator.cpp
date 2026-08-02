@@ -50,7 +50,7 @@ JointStateAggregator::JointStateAggregator(
         channels_.push_back(Channel{
             std::move(joint),
             std::move(sample),
-            false});
+            FeedbackSource::None});
     }
 }
 
@@ -81,7 +81,33 @@ bool JointStateAggregator::ingest(
     channel.sample.fault_flags = feedback.fault_flags;
     channel.sample.mode_state = feedback.mode_state;
     channel.sample.received_at = received_at;
-    channel.valid = true;
+    channel.source = FeedbackSource::Operation;
+    return true;
+}
+
+bool JointStateAggregator::ingest(
+    const hal::Rs02MechanicalPositionFeedback& feedback,
+    std::chrono::steady_clock::time_point received_at)
+{
+    const auto channel_entry = motor_to_index_.find(feedback.motor_id);
+    if (channel_entry == motor_to_index_.end())
+        return false;
+
+    Channel& channel = channels_[channel_entry->second];
+    const double sign = static_cast<double>(
+        channel.config.position_sign);
+    channel.sample.position_rad =
+        sign *
+        (feedback.motor_position_rad -
+         channel.config.joint_zero_at_motor_rad) /
+        channel.config.joint_to_motor_ratio;
+    channel.sample.velocity_rad_s = 0.0;
+    channel.sample.effort_nm = 0.0;
+    channel.sample.temperature_celsius = 0.0;
+    channel.sample.fault_flags = 0;
+    channel.sample.mode_state = 0;
+    channel.sample.received_at = received_at;
+    channel.source = FeedbackSource::MechanicalPosition;
     return true;
 }
 
@@ -95,12 +121,15 @@ std::optional<JointStateSnapshot> JointStateAggregator::snapshot(
     JointStateSnapshot result;
     result.captured_at = now;
     result.joints.reserve(channels_.size());
+    result.velocity_and_effort_valid = true;
     for (const Channel& channel : channels_) {
-        if (!channel.valid ||
+        if (channel.source == FeedbackSource::None ||
             now < channel.sample.received_at ||
             now - channel.sample.received_at > freshness_timeout) {
             return std::nullopt;
         }
+        if (channel.source != FeedbackSource::Operation)
+            result.velocity_and_effort_valid = false;
         result.joints.push_back(channel.sample);
     }
     return result;

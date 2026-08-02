@@ -3,11 +3,14 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 namespace raven_control::hal {
 namespace {
 
 constexpr std::uint8_t COMM_OPERATION_FEEDBACK = 2;
+constexpr std::uint8_t COMM_READ_PARAMETER = 17;
+constexpr std::uint16_t PARAM_MECHANICAL_POSITION = 0x7019;
 constexpr double PI = 3.14159265358979323846;
 constexpr double POSITION_SCALE_RAD = 4.0 * PI;
 
@@ -67,6 +70,42 @@ std::optional<Rs02OperationFeedback> decodeRs02OperationFeedback(
         (frame.id >> 16) & 0x3F);
     feedback.mode_state = static_cast<std::uint8_t>(
         (frame.id >> 22) & 0x03);
+    return feedback;
+}
+
+std::optional<Rs02MechanicalPositionFeedback>
+decodeRs02MechanicalPositionFeedback(
+    const CanFrame& frame,
+    std::uint8_t host_id) noexcept
+{
+    if (frame.dlc != 8)
+        return std::nullopt;
+
+    const auto communication_type = static_cast<std::uint8_t>(
+        (frame.id >> 24) & 0x1F);
+    const auto destination_host_id = static_cast<std::uint8_t>(
+        frame.id & 0xFF);
+    if (communication_type != COMM_READ_PARAMETER ||
+        destination_host_id != host_id ||
+        frame.data[0] != static_cast<std::uint8_t>(
+            PARAM_MECHANICAL_POSITION & 0xFF) ||
+        frame.data[1] != static_cast<std::uint8_t>(
+            PARAM_MECHANICAL_POSITION >> 8)) {
+        return std::nullopt;
+    }
+
+    const std::uint32_t raw_position =
+        std::uint32_t(frame.data[4]) |
+        (std::uint32_t(frame.data[5]) << 8) |
+        (std::uint32_t(frame.data[6]) << 16) |
+        (std::uint32_t(frame.data[7]) << 24);
+    float position = 0.0F;
+    std::memcpy(&position, &raw_position, sizeof(position));
+
+    Rs02MechanicalPositionFeedback feedback;
+    feedback.motor_id = static_cast<std::uint8_t>(
+        (frame.id >> 8) & 0xFF);
+    feedback.motor_position_rad = static_cast<double>(position);
     return feedback;
 }
 

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <string>
 #include <utility>
@@ -28,6 +29,19 @@ void packU16BigEndian(
 {
     data[offset] = static_cast<std::uint8_t>(value >> 8);
     data[offset + 1] = static_cast<std::uint8_t>(value & 0xFF);
+}
+
+void packFloatLittleEndian(
+    std::array<std::uint8_t, 8>& data,
+    std::size_t offset,
+    float value)
+{
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    data[offset] = static_cast<std::uint8_t>(bits & 0xFF);
+    data[offset + 1] = static_cast<std::uint8_t>((bits >> 8) & 0xFF);
+    data[offset + 2] = static_cast<std::uint8_t>((bits >> 16) & 0xFF);
+    data[offset + 3] = static_cast<std::uint8_t>((bits >> 24) & 0xFF);
 }
 
 void testType2DecoderRejectsUnrelatedFrames()
@@ -74,6 +88,36 @@ void testType2DecoderExtractsMetadata()
     check(
         std::abs(decoded->temperature_celsius - 25.3) < 1e-12,
         "temperature must decode in degrees Celsius");
+}
+
+void testType17MechanicalPositionDecoder()
+{
+    raven_control::hal::CanFrame frame;
+    constexpr std::uint8_t motor_id = 2;
+    frame.id =
+        (std::uint32_t(17) << 24) |
+        (std::uint32_t(motor_id) << 8) |
+        0xFD;
+    frame.dlc = 8;
+    frame.data[0] = 0x19;
+    frame.data[1] = 0x70;
+    packFloatLittleEndian(frame.data, 4, 3.25F);
+
+    const auto decoded =
+        raven_control::hal::decodeRs02MechanicalPositionFeedback(frame);
+    check(decoded.has_value(), "valid Type 17 position must decode");
+    if (!decoded)
+        return;
+    check(decoded->motor_id == motor_id, "Type 17 motor ID must decode");
+    check(
+        std::abs(decoded->motor_position_rad - 3.25) < 1e-12,
+        "Type 17 mechanical position must decode");
+
+    frame.data[0] = 0x18;
+    check(
+        !raven_control::hal::
+            decodeRs02MechanicalPositionFeedback(frame),
+        "a different Type 17 parameter must be ignored");
 }
 
 raven_control::config::JointMotorRuntimeConfig makeJoint(
@@ -123,6 +167,9 @@ void testAggregatorConvertsAndRequiresFreshCompleteState()
     check(snapshot.has_value(), "complete fresh state must snapshot");
     if (snapshot) {
         check(snapshot->joints.size() == 2, "snapshot must contain two joints");
+        check(
+            snapshot->velocity_and_effort_valid,
+            "complete Type 2 state must include velocity and effort");
         const auto& joint = snapshot->joints[1];
         check(std::abs(joint.position_rad + 1.0) < 1e-12,
               "position calibration must be applied once");
@@ -143,13 +190,50 @@ void testAggregatorConvertsAndRequiresFreshCompleteState()
     check(!aggregator.ingest(unknown, time), "unknown motor must be ignored");
 }
 
+void testMechanicalPositionsProducePositionOnlySnapshot()
+{
+    using Clock = std::chrono::steady_clock;
+    const auto time = Clock::time_point(std::chrono::seconds(20));
+    raven_control::telemetry::JointStateAggregator aggregator({
+        makeJoint("joint_a", 1),
+        makeJoint("joint_b", 2, -1, 1.0, 2.0),
+    });
+
+    raven_control::hal::Rs02MechanicalPositionFeedback first;
+    first.motor_id = 1;
+    first.motor_position_rad = 0.5;
+    raven_control::hal::Rs02MechanicalPositionFeedback second;
+    second.motor_id = 2;
+    second.motor_position_rad = 3.0;
+    check(aggregator.ingest(first, time), "first Type 17 value must ingest");
+    check(aggregator.ingest(second, time), "second Type 17 value must ingest");
+
+    const auto snapshot = aggregator.snapshot(
+        time,
+        std::chrono::milliseconds(100));
+    check(snapshot.has_value(), "complete Type 17 state must snapshot");
+    if (!snapshot)
+        return;
+    check(
+        !snapshot->velocity_and_effort_valid,
+        "Type 17 snapshot must omit unknown velocity and effort");
+    check(
+        std::abs(snapshot->joints[0].position_rad - 0.5) < 1e-12,
+        "Type 17 position must use joint coordinates");
+    check(
+        std::abs(snapshot->joints[1].position_rad + 1.0) < 1e-12,
+        "Type 17 position must apply sign, zero, and ratio");
+}
+
 }  // namespace
 
 int main()
 {
     testType2DecoderRejectsUnrelatedFrames();
     testType2DecoderExtractsMetadata();
+    testType17MechanicalPositionDecoder();
     testAggregatorConvertsAndRequiresFreshCompleteState();
+    testMechanicalPositionsProducePositionOnlySnapshot();
 
     if (failures != 0) {
         std::cerr << failures << " joint telemetry test(s) failed\n";

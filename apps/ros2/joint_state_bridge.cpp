@@ -61,7 +61,7 @@ public:
 
         RCLCPP_INFO(
             get_logger(),
-            "Read-only Type 2 bridge listening on %s for %zu joints; "
+            "Read-only Type 17/Type 2 bridge listening on %s for %zu joints; "
             "publishing /joint_states at %d Hz",
             interface_name.c_str(),
             aggregator_->jointCount(),
@@ -92,7 +92,8 @@ public:
                 if (now >= next_stale_warning) {
                     RCLCPP_WARN(
                         get_logger(),
-                        "Waiting for one fresh Type 2 frame from every joint; "
+                        "Waiting for one fresh Type 17 or Type 2 frame from "
+                        "every joint; "
                         "/joint_states is not being published");
                     next_stale_warning = now + std::chrono::seconds(1);
                 }
@@ -103,13 +104,17 @@ public:
             message.header.stamp = get_clock()->now();
             message.name.reserve(snapshot->joints.size());
             message.position.reserve(snapshot->joints.size());
-            message.velocity.reserve(snapshot->joints.size());
-            message.effort.reserve(snapshot->joints.size());
+            if (snapshot->velocity_and_effort_valid) {
+                message.velocity.reserve(snapshot->joints.size());
+                message.effort.reserve(snapshot->joints.size());
+            }
             for (const auto& joint : snapshot->joints) {
                 message.name.push_back(joint.joint_name);
                 message.position.push_back(joint.position_rad);
-                message.velocity.push_back(joint.velocity_rad_s);
-                message.effort.push_back(joint.effort_nm);
+                if (snapshot->velocity_and_effort_valid) {
+                    message.velocity.push_back(joint.velocity_rad_s);
+                    message.effort.push_back(joint.effort_nm);
+                }
             }
             publisher_->publish(message);
         }
@@ -138,6 +143,16 @@ private:
             if (decoded) {
                 (void)aggregator_->ingest(
                     *decoded,
+                    std::chrono::steady_clock::now());
+                continue;
+            }
+
+            const auto mechanical_position =
+                raven_control::hal::
+                    decodeRs02MechanicalPositionFeedback(frame);
+            if (mechanical_position) {
+                (void)aggregator_->ingest(
+                    *mechanical_position,
                     std::chrono::steady_clock::now());
             }
         }
