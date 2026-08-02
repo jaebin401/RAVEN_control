@@ -4,6 +4,8 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -143,7 +145,44 @@ double motorToJointTorque(
            motor.joint_to_motor_ratio * motor_torque_nm;
 }
 
+std::string hardLimitViolationReason(
+    const std::string& joint_name,
+    MotorFeedbackSource source,
+    double position_rad,
+    const safety::JointLimiter& limiter,
+    std::optional<double> previous_position_rad = std::nullopt)
+{
+    std::ostringstream message;
+    message
+        << std::fixed << std::setprecision(6)
+        << "Hard-limit violation on " << joint_name
+        << " [source=" << toString(source)
+        << ", q=" << position_rad
+        << " rad, limits=["
+        << limiter.config().hard_min_rad << ", "
+        << limiter.config().hard_max_rad << "] rad";
+    if (previous_position_rad) {
+        message << ", previous_q=" << *previous_position_rad
+                << " rad";
+    }
+    message << ']';
+    return message.str();
+}
+
 }  // namespace
+
+const char* toString(MotorFeedbackSource source) noexcept
+{
+    switch (source) {
+    case MotorFeedbackSource::None:
+        return "none";
+    case MotorFeedbackSource::MechanicalPosition:
+        return "Type17";
+    case MotorFeedbackSource::Operation:
+        return "Type2";
+    }
+    return "unknown";
+}
 
 const char* toString(MotorCommandResult result) noexcept
 {
@@ -268,12 +307,20 @@ MotorCommandResult MotorDriver::enableAll()
             return MotorCommandResult::UnconfirmedLimits;
         if (!channel.feedback.valid)
             return MotorCommandResult::InvalidFeedback;
+        if (channel.feedback.source !=
+            MotorFeedbackSource::MechanicalPosition) {
+            return MotorCommandResult::InvalidFeedback;
+        }
         if (!feedbackFresh(channel.feedback, now))
             return MotorCommandResult::StaleFeedback;
         if (channel.limiter.isHardViolation(
                 channel.feedback.position_rad)) {
             latchFaultUnlocked(
-                "Hard-limit violation on " + channel.motor.joint_name);
+                hardLimitViolationReason(
+                    channel.motor.joint_name,
+                    channel.feedback.source,
+                    channel.feedback.position_rad,
+                    channel.limiter));
             return MotorCommandResult::HardLimitViolation;
         }
     }
@@ -400,7 +447,11 @@ MotorCommandResult MotorDriver::sendMitCommand(
     if (channel.limiter.isHardViolation(
             channel.feedback.position_rad)) {
         latchFaultUnlocked(
-            "Hard-limit violation on " + joint_name);
+            hardLimitViolationReason(
+                joint_name,
+                channel.feedback.source,
+                channel.feedback.position_rad,
+                channel.limiter));
         return MotorCommandResult::HardLimitViolation;
     }
 
@@ -648,8 +699,14 @@ bool MotorDriver::stopAllUnlocked()
     enabled_ = false;
     feedback_hold_latched_ = false;
     feedback_hold_reason_.clear();
-    for (auto& entry : channels_)
+    for (auto& entry : channels_) {
         entry.second.last_mit_command = LastMitCommand{};
+        entry.second.feedback.valid = false;
+        entry.second.feedback.operation_feedback_valid = false;
+        entry.second.feedback.source = MotorFeedbackSource::None;
+        entry.second.feedback.received_at = {};
+        entry.second.feedback.operation_received_at = {};
+    }
     return success;
 }
 
@@ -667,6 +724,11 @@ void MotorDriver::processFrameUnlocked(const CanFrame& frame)
 
     const std::uint8_t communication_type = communicationType(frame);
     if (communication_type == COMM_OPERATION_FEEDBACK) {
+        // Type 2 frames queued during a stop transition must not become the
+        // next enable's bootstrap position.
+        if (!enabled_)
+            return;
+
         const auto decoded = decodeRs02OperationFeedback(
             frame,
             host_id_);
@@ -678,6 +740,10 @@ void MotorDriver::processFrameUnlocked(const CanFrame& frame)
             return;
 
         Channel& channel = channels_.at(joint->second);
+        const std::optional<double> previous_position =
+            channel.feedback.valid
+            ? std::optional<double>(channel.feedback.position_rad)
+            : std::nullopt;
         const auto received_at = std::chrono::steady_clock::now();
 
         channel.feedback.position_rad = motorToJointPosition(
@@ -693,6 +759,7 @@ void MotorDriver::processFrameUnlocked(const CanFrame& frame)
             decoded->temperature_celsius;
         channel.feedback.fault_flags = decoded->fault_flags;
         channel.feedback.mode_state = decoded->mode_state;
+        channel.feedback.source = MotorFeedbackSource::Operation;
         channel.feedback.valid = true;
         channel.feedback.operation_feedback_valid = true;
         channel.feedback.received_at = received_at;
@@ -708,12 +775,21 @@ void MotorDriver::processFrameUnlocked(const CanFrame& frame)
         if (channel.limiter.isHardViolation(
                 channel.feedback.position_rad)) {
             latchFaultUnlocked(
-                "Hard-limit violation on " + joint->second);
+                hardLimitViolationReason(
+                    joint->second,
+                    channel.feedback.source,
+                    channel.feedback.position_rad,
+                    channel.limiter,
+                    previous_position));
         }
         return;
     }
 
     if (communication_type != COMM_READ_PARAMETER)
+        return;
+
+    // A delayed Type 17 response must not replace active Type 2 feedback.
+    if (enabled_)
         return;
 
     if (frame.data[0] !=
@@ -730,10 +806,16 @@ void MotorDriver::processFrameUnlocked(const CanFrame& frame)
         return;
 
     Channel& channel = channels_.at(joint->second);
+    const std::optional<double> previous_position =
+        channel.feedback.valid
+        ? std::optional<double>(channel.feedback.position_rad)
+        : std::nullopt;
     channel.feedback.position_rad =
         motorToJointPosition(
             channel.motor,
             unpackFloatLittleEndian(frame.data, 4));
+    channel.feedback.source =
+        MotorFeedbackSource::MechanicalPosition;
     channel.feedback.valid = true;
     channel.feedback.received_at =
         std::chrono::steady_clock::now();
@@ -741,7 +823,12 @@ void MotorDriver::processFrameUnlocked(const CanFrame& frame)
     if (channel.limiter.isHardViolation(
             channel.feedback.position_rad)) {
         latchFaultUnlocked(
-            "Hard-limit violation on " + joint->second);
+            hardLimitViolationReason(
+                joint->second,
+                channel.feedback.source,
+                channel.feedback.position_rad,
+                channel.limiter,
+                previous_position));
     }
 }
 

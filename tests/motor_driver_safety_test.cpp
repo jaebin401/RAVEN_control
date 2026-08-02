@@ -416,6 +416,10 @@ void testType2OperationFeedbackIsDecodedInJointCoordinates()
     check(feedback && feedback->operation_feedback_valid,
           "Type 2 feedback must mark the full operation state valid");
     if (feedback) {
+        check(
+            feedback->source ==
+                raven_control::hal::MotorFeedbackSource::Operation,
+            "Type 2 feedback must record its source");
         check(std::abs(feedback->position_rad - 0.1) < 0.001,
               "Type 2 position must use joint calibration");
         check(std::abs(feedback->velocity_rad_s - 0.625) < 0.002,
@@ -498,6 +502,110 @@ void testType2HardLimitLatchesAndStopsAll()
           "Type 2 hard-limit fault must disable the driver");
     check(countFrames(transport, COMM_STOP) == 3,
           "Type 2 hard-limit fault must stop every configured motor");
+    check(
+        driver.faultReason().find("source=Type2") !=
+            std::string::npos,
+        "Type 2 hard-limit reason must identify its feedback source");
+    check(
+        driver.faultReason().find("limits=[-1.000000, 1.000000]") !=
+            std::string::npos,
+        "hard-limit reason must include the configured bounds");
+}
+
+void testStopRequiresFreshType17BeforeReenable()
+{
+    FakeCanTransport transport;
+    raven_control::hal::MotorDriver driver(
+        transport,
+        motorMap(),
+        limiters(true));
+    queueHealthyFeedback(transport);
+    driver.poll();
+    check(
+        driver.enableAll() ==
+            raven_control::hal::MotorCommandResult::Sent,
+        "healthy Type 17 feedback must allow the initial enable");
+
+    transport.incoming.push_back(operationFeedback(
+        1,
+        0.2,
+        0.0,
+        0.0,
+        30.0));
+    driver.poll();
+    check(driver.stopAll(),
+          "explicit stop must succeed before re-enable test");
+    check(!driver.allFeedbackValid(),
+          "stop must invalidate feedback from the previous mode");
+
+    transport.incoming.push_back(operationFeedback(
+        1,
+        0.9,
+        0.0,
+        0.0,
+        30.0));
+    driver.poll();
+    check(!driver.allFeedbackValid(),
+          "delayed Type 2 feedback must be ignored while stopped");
+    check(
+        driver.enableAll() ==
+            raven_control::hal::MotorCommandResult::InvalidFeedback,
+        "re-enable must wait for fresh Type 17 feedback");
+
+    queueHealthyFeedback(transport);
+    driver.poll();
+    check(driver.allFeedbackValid(),
+          "fresh Type 17 feedback must restore bootstrap validity");
+    for (const auto& motor : motorMap()) {
+        const auto feedback = driver.feedback(motor.joint_name);
+        check(
+            feedback &&
+                feedback->source == raven_control::hal::
+                                        MotorFeedbackSource::
+                                            MechanicalPosition,
+            "stopped feedback must come from Type 17");
+    }
+    check(
+        driver.enableAll() ==
+            raven_control::hal::MotorCommandResult::Sent,
+        "fresh Type 17 feedback must allow re-enable");
+}
+
+void testEnabledDriverIgnoresDelayedType17()
+{
+    FakeCanTransport transport;
+    raven_control::hal::MotorDriver driver(
+        transport,
+        motorMap(),
+        limiters(true));
+    queueHealthyFeedback(transport);
+    driver.poll();
+    check(
+        driver.enableAll() ==
+            raven_control::hal::MotorCommandResult::Sent,
+        "healthy Type 17 feedback must allow enable");
+
+    transport.incoming.push_back(operationFeedback(
+        1,
+        0.2,
+        0.0,
+        0.0,
+        30.0));
+    driver.poll();
+    transport.incoming.push_back(positionFeedback(1, 1.1F));
+    driver.poll();
+
+    check(!driver.faultLatched(),
+          "delayed Type 17 feedback must not fault an enabled driver");
+    const auto feedback = driver.feedback("joint_1");
+    check(
+        feedback &&
+            feedback->source ==
+                raven_control::hal::MotorFeedbackSource::Operation,
+        "enabled feedback source must remain Type 2");
+    check(
+        feedback && std::abs(feedback->position_rad - 0.2) < 0.001,
+        "delayed Type 17 feedback must not overwrite Type 2 position");
 }
 
 void testMissingType2FeedbackEntersPositionHold()
@@ -684,12 +792,6 @@ void testHardViolationLatchesAndStopsAll()
         transport,
         motorMap(),
         limiters(true));
-    queueHealthyFeedback(transport);
-    driver.poll();
-    check(
-        driver.enableAll() ==
-            raven_control::hal::MotorCommandResult::Sent,
-        "healthy joints must enable before hard-limit test");
     transport.sent.clear();
 
     transport.incoming.push_back(positionFeedback(2, 1.1F));
@@ -701,6 +803,10 @@ void testHardViolationLatchesAndStopsAll()
           "hard-limit fault must disable the driver");
     check(countFrames(transport, COMM_STOP) == 3,
           "hard-limit fault must stop every configured motor");
+    check(
+        driver.faultReason().find("source=Type17") !=
+            std::string::npos,
+        "Type 17 hard-limit reason must identify its feedback source");
     check(
         driver.sendMitCommand(
             "joint_1", 0.0, 0.0, 40.0, 5.0, 0.0) ==
@@ -784,6 +890,8 @@ int main()
     testType2OperationFeedbackIsDecodedInJointCoordinates();
     testType2FaultLatchesAndStopsAll();
     testType2HardLimitLatchesAndStopsAll();
+    testStopRequiresFreshType17BeforeReenable();
+    testEnabledDriverIgnoresDelayedType17();
     testMissingType2FeedbackEntersPositionHold();
     testClampedTargetStopsOutwardDesiredVelocity();
     testOutOfRangeVelocityLatchesAndStopsAll();

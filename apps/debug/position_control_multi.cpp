@@ -316,6 +316,14 @@ void controlLoop(
                     states[index].kp.load(),
                     states[index].kd.load(),
                     0.0);
+                if (result == raven_control::hal::
+                                  MotorCommandResult::NotEnabled &&
+                    !driver.isEnabled()) {
+                    // The user stopped the motors between the enabled check
+                    // above and this command. This is a normal transition,
+                    // not a controller failure.
+                    break;
+                }
                 if (result !=
                         raven_control::hal::MotorCommandResult::Sent &&
                     result != raven_control::hal::
@@ -340,15 +348,26 @@ void controlLoop(
 
 bool initializeTargetsFromFeedback(
     raven_control::hal::MotorDriver& driver,
-    std::array<ControlState, JOINTS.size()>& states)
+    std::array<ControlState, JOINTS.size()>& states,
+    std::chrono::milliseconds feedback_timeout)
 {
     if (!driver.allFeedbackValid())
         return false;
 
+    const auto now = std::chrono::steady_clock::now();
     for (std::size_t index = 0; index < JOINTS.size(); ++index) {
         const auto feedback = driver.feedback(JOINTS[index].name);
-        if (!feedback || !feedback->valid)
+        if (!feedback ||
+            !feedback->valid ||
+            feedback->source != raven_control::hal::
+                                    MotorFeedbackSource::
+                                        MechanicalPosition ||
+            feedback->received_at ==
+                std::chrono::steady_clock::time_point{} ||
+            now < feedback->received_at ||
+            now - feedback->received_at > feedback_timeout) {
             return false;
+        }
         states[index].setpoint_rad.store(feedback->position_rad);
         states[index].target_rad.store(feedback->position_rad);
     }
@@ -441,7 +460,13 @@ int main(int argc, char* argv[])
                 std::chrono::milliseconds(5));
         }
 
-        initializeTargetsFromFeedback(driver, states);
+        if (!initializeTargetsFromFeedback(
+                driver,
+                states,
+                motor_config.feedback_timeout)) {
+            throw std::runtime_error(
+                "Fresh Type 17 feedback was not received at startup");
+        }
         std::cout
             << "Joint limits: " << limits_path << '\n'
             << "Motor config: " << motor_config_path << '\n';
@@ -478,9 +503,10 @@ int main(int argc, char* argv[])
                             std::cerr << "Failed to stop all motors\n";
                     } else if (!initializeTargetsFromFeedback(
                                    driver,
-                                   states)) {
+                                   states,
+                                   motor_config.feedback_timeout)) {
                         std::cerr
-                            << "Enable rejected: fresh feedback "
+                            << "Enable rejected: fresh Type 17 feedback "
                                "is unavailable\n";
                     } else {
                         const auto result = driver.enableAll();

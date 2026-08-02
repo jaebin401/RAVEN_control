@@ -15,6 +15,15 @@
 
 namespace raven_control::hal {
 
+enum class MotorFeedbackSource {
+    None,
+    MechanicalPosition,
+    Operation,
+};
+
+[[nodiscard]] const char* toString(
+    MotorFeedbackSource source) noexcept;
+
 struct JointMotorConfig {
     std::string joint_name;
     std::uint8_t motor_id = 0;
@@ -30,6 +39,7 @@ struct MotorFeedback {
     double temperature_celsius = 0.0;
     std::uint8_t fault_flags = 0;
     std::uint8_t mode_state = 0;
+    MotorFeedbackSource source = MotorFeedbackSource::None;
     bool valid = false;
     bool operation_feedback_valid = false;
     std::chrono::steady_clock::time_point received_at{};
