@@ -2,6 +2,12 @@ cmake_minimum_required(VERSION 3.16)
 
 project(RAVEN_control VERSION 0.2.0 LANGUAGES CXX)
 
+option(
+    RAVEN_BUILD_ROS2_BRIDGE
+    "Build the read-only Type 2 to ROS 2 joint-state bridge"
+    ON
+)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -60,6 +66,7 @@ add_library(
     STATIC
     src/config/motor_config.cpp
     src/hal/motor_driver.cpp
+    src/hal/rs02_operation_feedback.cpp
 )
 target_include_directories(
     raven_hal
@@ -74,6 +81,18 @@ target_compile_definitions(
     raven_hal
     PRIVATE RAVEN_HAS_YAML_CPP=${RAVEN_HAS_YAML_CPP}
 )
+
+add_library(
+    raven_telemetry
+    STATIC
+    src/telemetry/joint_state_aggregator.cpp
+)
+target_include_directories(
+    raven_telemetry
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(raven_telemetry PUBLIC raven_hal)
+raven_enable_warnings(raven_telemetry)
 
 add_library(
     raven_logging
@@ -183,10 +202,51 @@ if(BUILD_TESTING)
         NAME gravity_compensator_test
         COMMAND gravity_compensator_test
     )
+
+    add_executable(
+        joint_state_aggregator_test
+        tests/joint_state_aggregator_test.cpp
+    )
+    target_link_libraries(
+        joint_state_aggregator_test
+        PRIVATE raven_telemetry
+    )
+    raven_enable_warnings(joint_state_aggregator_test)
+    add_test(
+        NAME joint_state_aggregator_test
+        COMMAND joint_state_aggregator_test
+    )
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_sources(raven_hal PRIVATE src/hal/can_interface.cpp)
+
+    if(RAVEN_BUILD_ROS2_BRIDGE)
+        find_package(ament_cmake QUIET)
+        find_package(rclcpp QUIET)
+        find_package(sensor_msgs QUIET)
+        if(ament_cmake_FOUND AND rclcpp_FOUND AND sensor_msgs_FOUND)
+            add_executable(
+                raven_joint_state_bridge
+                apps/ros2/joint_state_bridge.cpp
+            )
+            target_link_libraries(
+                raven_joint_state_bridge
+                PRIVATE raven_telemetry raven_hal
+            )
+            ament_target_dependencies(
+                raven_joint_state_bridge
+                rclcpp
+                sensor_msgs
+            )
+            raven_enable_warnings(raven_joint_state_bridge)
+        else()
+            message(WARNING
+                "ROS 2 was not found in the current environment. "
+                "raven_joint_state_bridge will not be built. "
+                "Source /opt/ros/<distro>/setup.bash and configure again.")
+        endif()
+    endif()
 
     function(raven_add_linux_executable target source)
         add_executable(${target} ${source})

@@ -63,15 +63,6 @@ void packU16BigEndian(
     data[offset + 1] = static_cast<std::uint8_t>(value & 0xFF);
 }
 
-std::uint16_t unpackU16BigEndian(
-    const std::array<std::uint8_t, 8>& data,
-    std::size_t offset)
-{
-    return
-        (std::uint16_t(data[offset]) << 8) |
-        std::uint16_t(data[offset + 1]);
-}
-
 double unpackFloatLittleEndian(
     const std::array<std::uint8_t, 8>& data,
     std::size_t offset)
@@ -97,15 +88,6 @@ std::uint16_t encodeUnsigned(double value, double maximum)
     const double clamped = std::clamp(value, 0.0, maximum);
     const double normalized = (clamped / maximum) * 65535.0;
     return static_cast<std::uint16_t>(normalized);
-}
-
-double decodeSymmetric(
-    std::uint16_t encoded,
-    double absolute_limit)
-{
-    return
-        ((static_cast<double>(encoded) / 65535.0) * 2.0 - 1.0) *
-        absolute_limit;
 }
 
 double motorToJointPosition(
@@ -685,39 +667,32 @@ void MotorDriver::processFrameUnlocked(const CanFrame& frame)
 
     const std::uint8_t communication_type = communicationType(frame);
     if (communication_type == COMM_OPERATION_FEEDBACK) {
-        const auto joint = motor_to_joint_.find(sourceMotorId(frame));
+        const auto decoded = decodeRs02OperationFeedback(
+            frame,
+            host_id_);
+        if (!decoded)
+            return;
+
+        const auto joint = motor_to_joint_.find(decoded->motor_id);
         if (joint == motor_to_joint_.end())
             return;
 
         Channel& channel = channels_.at(joint->second);
-        const double motor_position_rad = decodeSymmetric(
-            unpackU16BigEndian(frame.data, 0),
-            POSITION_SCALE_RAD);
-        const double motor_velocity_rad_s = decodeSymmetric(
-            unpackU16BigEndian(frame.data, 2),
-            RS02_OPERATION_MAX_VELOCITY_RAD_S);
-        const double motor_torque_nm = decodeSymmetric(
-            unpackU16BigEndian(frame.data, 4),
-            RS02_OPERATION_MAX_TORQUE_NM);
-        const auto raw_temperature = static_cast<std::int16_t>(
-            unpackU16BigEndian(frame.data, 6));
         const auto received_at = std::chrono::steady_clock::now();
 
         channel.feedback.position_rad = motorToJointPosition(
             channel.motor,
-            motor_position_rad);
+            decoded->motor_position_rad);
         channel.feedback.velocity_rad_s = motorToJointVelocity(
             channel.motor,
-            motor_velocity_rad_s);
+            decoded->motor_velocity_rad_s);
         channel.feedback.torque_nm = motorToJointTorque(
             channel.motor,
-            motor_torque_nm);
+            decoded->motor_torque_nm);
         channel.feedback.temperature_celsius =
-            static_cast<double>(raw_temperature) / 10.0;
-        channel.feedback.fault_flags = static_cast<std::uint8_t>(
-            (frame.id >> 16) & 0x3F);
-        channel.feedback.mode_state = static_cast<std::uint8_t>(
-            (frame.id >> 22) & 0x03);
+            decoded->temperature_celsius;
+        channel.feedback.fault_flags = decoded->fault_flags;
+        channel.feedback.mode_state = decoded->mode_state;
         channel.feedback.valid = true;
         channel.feedback.operation_feedback_valid = true;
         channel.feedback.received_at = received_at;

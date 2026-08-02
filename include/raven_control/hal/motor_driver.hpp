@@ -1,6 +1,7 @@
 #pragma once
 
 #include "raven_control/hal/can_interface.hpp"
+#include "raven_control/hal/rs02_operation_feedback.hpp"
 #include "raven_control/safety/joint_limiter.hpp"
 
 #include <chrono>
@@ -13,12 +14,6 @@
 #include <vector>
 
 namespace raven_control::hal {
-
-// Fixed wire ranges for RS02 private-protocol communication type 1.
-inline constexpr double RS02_OPERATION_MAX_KP = 500.0;
-inline constexpr double RS02_OPERATION_MAX_KD = 5.0;
-inline constexpr double RS02_OPERATION_MAX_VELOCITY_RAD_S = 44.0;
-inline constexpr double RS02_OPERATION_MAX_TORQUE_NM = 17.0;
 
 struct JointMotorConfig {
     std::string joint_name;
