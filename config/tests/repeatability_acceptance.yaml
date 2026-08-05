@@ -1,0 +1,57 @@
+schema_version: 1
+
+test:
+  name: repeatability_acceptance
+  type: repeatability_acceptance
+  description: Repeat representative poses and collect baseline acceptance metrics.
+  repeat_count: 10
+
+runtime:
+  can_interface: can0
+  joint_limits_path: config/joint_limits.yaml
+  motor_config_path: config/motor_config.yaml
+  output_root: logs/characterization
+  vbus_request_period_ms: 100
+  soft_limit_clearance_deg: 2.0
+  max_step_deg: 5.0
+  startup_transition_s: 3.0
+  final_hold_s: 2.0
+  startup_gravity_scale: 1.0
+
+startup_target_deg:
+  shoulder_Joint: 0.0
+  upperArm_Joint: 0.0
+  foreArm_Joint: 0.0
+
+phases:
+  - name: pose_a
+    motion: quintic
+    target_deg: {shoulder_Joint: -30.0, upperArm_Joint: -20.0, foreArm_Joint: 20.0}
+    duration_s: 5.0
+    hold_s: 2.0
+    gravity_scale: 1.0
+    analysis_window: true
+
+  - name: pose_b
+    motion: quintic
+    target_deg: {shoulder_Joint: 30.0, upperArm_Joint: -40.0, foreArm_Joint: 35.0}
+    duration_s: 5.0
+    hold_s: 2.0
+    gravity_scale: 1.0
+    analysis_window: true
+
+  - name: pose_c
+    motion: quintic
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 25.0, foreArm_Joint: 60.0}
+    duration_s: 5.0
+    hold_s: 2.0
+    gravity_scale: 1.0
+    analysis_window: true
+
+  - name: center
+    motion: quintic
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 0.0, foreArm_Joint: 0.0}
+    duration_s: 5.0
+    hold_s: 2.0
+    gravity_scale: 1.0
+    analysis_window: true

@@ -95,10 +95,13 @@ void MotionLogger::saveCsv(const std::string& path) const
             << ',' << prefix << ".estimated_control_torque_nm"
             << ',' << prefix << ".measured_torque_nm"
             << ',' << prefix << ".motor_temperature_celsius"
+            << ',' << prefix << ".bus_voltage_v"
             << ',' << prefix << ".feedback_age_ms"
             << ',' << prefix << ".operation_feedback_age_ms"
+            << ',' << prefix << ".bus_voltage_age_ms"
             << ',' << prefix << ".feedback_valid"
             << ',' << prefix << ".operation_feedback_valid"
+            << ',' << prefix << ".bus_voltage_valid"
             << ',' << prefix << ".motor_fault_flags"
             << ',' << prefix << ".motor_mode_state"
             << ',' << prefix << ".kp"
@@ -167,11 +170,16 @@ void MotionLogger::saveCsv(const std::string& path) const
             output << ',';
             writeNumber(output, joint.motor_temperature_celsius);
             output << ',';
+            writeNumber(output, joint.bus_voltage_v);
+            output << ',';
             writeNumber(output, joint.feedback_age_ms);
             output << ',';
             writeNumber(output, joint.operation_feedback_age_ms);
+            output << ',';
+            writeNumber(output, joint.bus_voltage_age_ms);
             output << ',' << (joint.feedback_valid ? 1 : 0)
                    << ',' << (joint.operation_feedback_valid ? 1 : 0)
+                   << ',' << (joint.bus_voltage_valid ? 1 : 0)
                    << ',' << static_cast<unsigned int>(
                           joint.motor_fault_flags)
                    << ',' << static_cast<unsigned int>(

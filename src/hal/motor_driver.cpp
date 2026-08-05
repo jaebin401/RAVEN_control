@@ -18,6 +18,7 @@ constexpr std::uint8_t COMM_ENABLE = 3;
 constexpr std::uint8_t COMM_STOP = 4;
 constexpr std::uint8_t COMM_READ_PARAMETER = 17;
 constexpr std::uint16_t PARAM_MECHANICAL_POSITION = 0x7019;
+constexpr std::uint16_t PARAM_BUS_VOLTAGE = 0x701C;
 
 constexpr double PI = 3.14159265358979323846;
 constexpr double POSITION_SCALE_RAD = 4.0 * PI;
@@ -367,6 +368,17 @@ bool MotorDriver::requestMechanicalPositions()
     return success;
 }
 
+bool MotorDriver::requestBusVoltages()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    bool success = true;
+    for (const auto& entry : channels_) {
+        success = sendReadBusVoltage(entry.second.motor.motor_id) &&
+                  success;
+    }
+    return success;
+}
+
 std::size_t MotorDriver::poll()
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -607,6 +619,18 @@ bool MotorDriver::sendReadMechanicalPosition(
     return transport_.send(frame);
 }
 
+bool MotorDriver::sendReadBusVoltage(std::uint8_t motor_id)
+{
+    CanFrame frame;
+    frame.id = buildExtendedId(
+        COMM_READ_PARAMETER,
+        host_id_,
+        motor_id);
+    frame.dlc = 8;
+    packU16LittleEndian(frame.data, 0, PARAM_BUS_VOLTAGE);
+    return transport_.send(frame);
+}
+
 bool MotorDriver::sendMitFrame(
     std::uint8_t motor_id,
     double position_rad,
@@ -788,24 +812,35 @@ void MotorDriver::processFrameUnlocked(const CanFrame& frame)
     if (communication_type != COMM_READ_PARAMETER)
         return;
 
-    // A delayed Type 17 response must not replace active Type 2 feedback.
-    if (enabled_)
-        return;
-
-    if (frame.data[0] !=
-            static_cast<std::uint8_t>(
-                PARAM_MECHANICAL_POSITION & 0xFF) ||
-        frame.data[1] !=
-            static_cast<std::uint8_t>(
-                PARAM_MECHANICAL_POSITION >> 8)) {
-        return;
-    }
+    const std::uint16_t parameter =
+        std::uint16_t(frame.data[0]) |
+        (std::uint16_t(frame.data[1]) << 8);
 
     const auto joint = motor_to_joint_.find(sourceMotorId(frame));
     if (joint == motor_to_joint_.end())
         return;
 
     Channel& channel = channels_.at(joint->second);
+    if (parameter == PARAM_BUS_VOLTAGE) {
+        const double bus_voltage_v =
+            unpackFloatLittleEndian(frame.data, 4);
+        if (!std::isfinite(bus_voltage_v) || bus_voltage_v < 0.0)
+            return;
+        channel.feedback.bus_voltage_v = bus_voltage_v;
+        channel.feedback.bus_voltage_valid = true;
+        channel.feedback.bus_voltage_received_at =
+            std::chrono::steady_clock::now();
+        return;
+    }
+
+    // A delayed mechanical-position response must not replace active
+    // Type 2 feedback.
+    if (enabled_)
+        return;
+
+    if (parameter != PARAM_MECHANICAL_POSITION) {
+        return;
+    }
     const std::optional<double> previous_position =
         channel.feedback.valid
         ? std::optional<double>(channel.feedback.position_rad)

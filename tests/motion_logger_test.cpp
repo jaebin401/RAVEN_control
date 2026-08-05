@@ -50,10 +50,13 @@ int main()
     joint.estimated_control_torque_nm = 1.75;
     joint.measured_torque_nm = 1.7;
     joint.motor_temperature_celsius = 32.5;
+    joint.bus_voltage_v = 30.2;
     joint.feedback_age_ms = 3.0;
     joint.operation_feedback_age_ms = 2.0;
+    joint.bus_voltage_age_ms = 10.0;
     joint.feedback_valid = true;
     joint.operation_feedback_valid = true;
+    joint.bus_voltage_valid = true;
     joint.motor_fault_flags = 0;
     joint.motor_mode_state = 2;
     joint.kp = 20.0;
@@ -93,6 +96,10 @@ int main()
         csv.find("shoulder_Joint.measured_torque_nm") !=
             std::string::npos,
         "CSV must include Type 2 measured torque columns");
+    check(
+        csv.find("shoulder_Joint.bus_voltage_v") !=
+            std::string::npos,
+        "CSV must include Type 17 bus-voltage columns");
     check(
         csv.find("0,Pose A,0,500,0,500,0") !=
             std::string::npos,

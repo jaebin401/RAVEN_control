@@ -1,0 +1,80 @@
+schema_version: 1
+
+test:
+  name: friction_identification_j1
+  type: friction_identification
+  description: Bidirectional constant-velocity sweeps for Coulomb and viscous friction fitting.
+  repeat_count: 1
+
+runtime:
+  can_interface: can0
+  joint_limits_path: config/joint_limits.yaml
+  motor_config_path: config/motor_config.yaml
+  output_root: logs/characterization
+  vbus_request_period_ms: 100
+  soft_limit_clearance_deg: 2.0
+  max_step_deg: 5.0
+  startup_transition_s: 4.0
+  final_hold_s: 1.0
+  startup_gravity_scale: 1.0
+
+startup_target_deg:
+  shoulder_Joint: 0.0
+  upperArm_Joint: -20.0
+  foreArm_Joint: 0.0
+
+phases:
+  - name: j1_forward_2deg_s
+    motion: constant_velocity
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 20.0, foreArm_Joint: 0.0}
+    velocity_deg_s: 2.0
+    acceleration_s: 1.0
+    hold_s: 1.0
+    gravity_scale: 1.0
+    analysis_window: true
+
+  - name: j1_reverse_2deg_s
+    motion: constant_velocity
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: -20.0, foreArm_Joint: 0.0}
+    velocity_deg_s: 2.0
+    acceleration_s: 1.0
+    hold_s: 1.0
+    gravity_scale: 1.0
+    analysis_window: true
+
+  - name: j1_forward_5deg_s
+    motion: constant_velocity
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 20.0, foreArm_Joint: 0.0}
+    velocity_deg_s: 5.0
+    acceleration_s: 1.0
+    hold_s: 1.0
+    gravity_scale: 1.0
+    analysis_window: true
+
+  - name: j1_reverse_5deg_s
+    motion: constant_velocity
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: -20.0, foreArm_Joint: 0.0}
+    velocity_deg_s: 5.0
+    acceleration_s: 1.0
+    hold_s: 1.0
+    gravity_scale: 1.0
+    analysis_window: true
+
+  - name: j1_forward_10deg_s
+    motion: constant_velocity
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 20.0, foreArm_Joint: 0.0}
+    velocity_deg_s: 10.0
+    acceleration_s: 1.0
+    hold_s: 1.0
+    gravity_scale: 1.0
+    analysis_window: true
+
+  - name: j1_reverse_10deg_s
+    motion: constant_velocity
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: -20.0, foreArm_Joint: 0.0}
+    velocity_deg_s: 10.0
+    acceleration_s: 1.0
+    hold_s: 1.0
+    gravity_scale: 1.0
+    analysis_window: true
+

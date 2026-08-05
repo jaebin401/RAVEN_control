@@ -22,6 +22,7 @@ constexpr std::uint8_t COMM_ENABLE = 3;
 constexpr std::uint8_t COMM_STOP = 4;
 constexpr std::uint8_t COMM_READ_PARAMETER = 17;
 constexpr std::uint16_t PARAM_MECHANICAL_POSITION = 0x7019;
+constexpr std::uint16_t PARAM_BUS_VOLTAGE = 0x701C;
 constexpr double PI = 3.14159265358979323846;
 
 int failures = 0;
@@ -120,6 +121,27 @@ raven_control::hal::CanFrame positionFeedback(
         frame.data.data() + 4,
         &position_rad,
         sizeof(position_rad));
+    return frame;
+}
+
+raven_control::hal::CanFrame busVoltageFeedback(
+    std::uint8_t motor_id,
+    float voltage_v)
+{
+    raven_control::hal::CanFrame frame;
+    frame.id =
+        (std::uint32_t(COMM_READ_PARAMETER) << 24) |
+        (std::uint32_t(motor_id) << 8) |
+        HOST_ID;
+    frame.dlc = 8;
+    frame.data[0] = static_cast<std::uint8_t>(
+        PARAM_BUS_VOLTAGE & 0xFF);
+    frame.data[1] = static_cast<std::uint8_t>(
+        PARAM_BUS_VOLTAGE >> 8);
+    std::memcpy(
+        frame.data.data() + 4,
+        &voltage_v,
+        sizeof(voltage_v));
     return frame;
 }
 
@@ -608,6 +630,60 @@ void testEnabledDriverIgnoresDelayedType17()
         "delayed Type 17 feedback must not overwrite Type 2 position");
 }
 
+void testBusVoltageCanBeReadWhileEnabled()
+{
+    FakeCanTransport transport;
+    raven_control::hal::MotorDriver driver(
+        transport,
+        motorMap(),
+        limiters(true));
+    queueHealthyFeedback(transport);
+    driver.poll();
+    check(
+        driver.enableAll() ==
+            raven_control::hal::MotorCommandResult::Sent,
+        "healthy feedback must allow enable before VBUS test");
+    transport.incoming.push_back(operationFeedback(
+        1,
+        0.2,
+        0.0,
+        0.0,
+        30.0));
+    driver.poll();
+
+    transport.sent.clear();
+    check(driver.requestBusVoltages(),
+          "VBUS Type 17 requests must be sent while enabled");
+    check(countFrames(transport, COMM_READ_PARAMETER) == 3,
+          "VBUS request must emit one Type 17 frame per motor");
+    for (const auto& frame : transport.sent) {
+        check(
+            frame.data[0] ==
+                    static_cast<std::uint8_t>(
+                        PARAM_BUS_VOLTAGE & 0xFF) &&
+                frame.data[1] ==
+                    static_cast<std::uint8_t>(
+                        PARAM_BUS_VOLTAGE >> 8),
+            "VBUS request must address parameter 0x701C");
+    }
+
+    transport.incoming.push_back(busVoltageFeedback(1, 31.25F));
+    driver.poll();
+    const auto feedback = driver.feedback("joint_1");
+    check(feedback && feedback->bus_voltage_valid,
+          "VBUS response must set a separate validity flag");
+    check(
+        feedback &&
+            std::abs(feedback->bus_voltage_v - 31.25) < 1e-6,
+        "VBUS response must decode the float voltage");
+    check(
+        feedback &&
+            feedback->source ==
+                raven_control::hal::MotorFeedbackSource::
+                    Operation,
+        "VBUS response must not replace the position source");
+}
+
 void testMissingType2FeedbackEntersPositionHold()
 {
     FakeCanTransport transport;
@@ -892,6 +968,7 @@ int main()
     testType2HardLimitLatchesAndStopsAll();
     testStopRequiresFreshType17BeforeReenable();
     testEnabledDriverIgnoresDelayedType17();
+    testBusVoltageCanBeReadWhileEnabled();
     testMissingType2FeedbackEntersPositionHold();
     testClampedTargetStopsOutwardDesiredVelocity();
     testOutOfRangeVelocityLatchesAndStopsAll();

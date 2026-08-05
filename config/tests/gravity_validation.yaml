@@ -1,0 +1,66 @@
+schema_version: 1
+
+test:
+  name: gravity_compensation_validation
+  type: gravity_validation
+  description: Compare hold error and feedback effort with gravity compensation off/on.
+  repeat_count: 1
+
+runtime:
+  can_interface: can0
+  joint_limits_path: config/joint_limits.yaml
+  motor_config_path: config/motor_config.yaml
+  output_root: logs/characterization
+  vbus_request_period_ms: 100
+  soft_limit_clearance_deg: 2.0
+  max_step_deg: 5.0
+  startup_transition_s: 3.0
+  final_hold_s: 1.0
+  startup_gravity_scale: 1.0
+
+startup_target_deg:
+  shoulder_Joint: 0.0
+  upperArm_Joint: 0.0
+  foreArm_Joint: 0.0
+
+phases:
+  - name: center_gravity_off
+    motion: hold
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 0.0, foreArm_Joint: 0.0}
+    duration_s: 10.0
+    gravity_scale: 0.0
+    analysis_window: true
+
+  - name: center_gravity_on
+    motion: hold
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 0.0, foreArm_Joint: 0.0}
+    duration_s: 10.0
+    gravity_scale: 1.0
+    analysis_window: true
+
+  - name: move_loaded_pose
+    motion: quintic
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: -40.0, foreArm_Joint: 35.0}
+    duration_s: 4.0
+    gravity_scale: 1.0
+
+  - name: loaded_pose_gravity_off
+    motion: hold
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: -40.0, foreArm_Joint: 35.0}
+    duration_s: 10.0
+    gravity_scale: 0.0
+    analysis_window: true
+
+  - name: loaded_pose_gravity_on
+    motion: hold
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: -40.0, foreArm_Joint: 35.0}
+    duration_s: 10.0
+    gravity_scale: 1.0
+    analysis_window: true
+
+  - name: return_center
+    motion: quintic
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 0.0, foreArm_Joint: 0.0}
+    duration_s: 4.0
+    gravity_scale: 1.0
+

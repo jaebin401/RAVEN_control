@@ -1,0 +1,80 @@
+schema_version: 1
+
+test:
+  name: joint_gain_tuning_j1
+  type: gain_tuning
+  description: Small position steps for quantitative Kp/Kd comparison.
+  repeat_count: 2
+
+runtime:
+  can_interface: can0
+  joint_limits_path: config/joint_limits.yaml
+  motor_config_path: config/motor_config.yaml
+  output_root: logs/characterization
+  vbus_request_period_ms: 100
+  soft_limit_clearance_deg: 2.0
+  max_step_deg: 2.0
+  startup_transition_s: 3.0
+  final_hold_s: 1.0
+  startup_gravity_scale: 1.0
+
+startup_target_deg:
+  shoulder_Joint: 0.0
+  upperArm_Joint: 0.0
+  foreArm_Joint: 0.0
+
+phases:
+  - name: kp4_kd010_positive
+    motion: step
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 1.0, foreArm_Joint: 0.0}
+    duration_s: 3.0
+    gravity_scale: 1.0
+    analysis_window: true
+    gains:
+      upperArm_Joint: {kp: 4.0, kd: 0.10}
+
+  - name: kp4_kd010_return
+    motion: step
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 0.0, foreArm_Joint: 0.0}
+    duration_s: 3.0
+    gravity_scale: 1.0
+    analysis_window: true
+    gains:
+      upperArm_Joint: {kp: 4.0, kd: 0.10}
+
+  - name: kp8_kd015_positive
+    motion: step
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 1.0, foreArm_Joint: 0.0}
+    duration_s: 3.0
+    gravity_scale: 1.0
+    analysis_window: true
+    gains:
+      upperArm_Joint: {kp: 8.0, kd: 0.15}
+
+  - name: kp8_kd015_return
+    motion: step
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 0.0, foreArm_Joint: 0.0}
+    duration_s: 3.0
+    gravity_scale: 1.0
+    analysis_window: true
+    gains:
+      upperArm_Joint: {kp: 8.0, kd: 0.15}
+
+  - name: kp12_kd025_positive
+    motion: step
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 1.0, foreArm_Joint: 0.0}
+    duration_s: 3.0
+    gravity_scale: 1.0
+    analysis_window: true
+    gains:
+      upperArm_Joint: {kp: 12.0, kd: 0.25}
+
+  - name: kp12_kd025_return
+    motion: step
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 0.0, foreArm_Joint: 0.0}
+    duration_s: 3.0
+    gravity_scale: 1.0
+    analysis_window: true
+    gains:
+      upperArm_Joint: {kp: 12.0, kd: 0.25}
+

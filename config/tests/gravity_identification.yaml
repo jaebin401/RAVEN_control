@@ -1,0 +1,91 @@
+schema_version: 1
+
+test:
+  name: gravity_identification
+  type: gravity_identification
+  description: Quasi-static torque mapping for J1/J2 gravity model fitting.
+  repeat_count: 1
+
+runtime:
+  can_interface: can0
+  joint_limits_path: config/joint_limits.yaml
+  motor_config_path: config/motor_config.yaml
+  output_root: logs/characterization
+  vbus_request_period_ms: 100
+  soft_limit_clearance_deg: 2.0
+  max_step_deg: 5.0
+  startup_transition_s: 4.0
+  final_hold_s: 1.0
+  startup_gravity_scale: 0.0
+
+startup_target_deg:
+  shoulder_Joint: 0.0
+  upperArm_Joint: -30.0
+  foreArm_Joint: 0.0
+
+phases:
+  - name: j1_minus_30_hold
+    motion: hold
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: -30.0, foreArm_Joint: 0.0}
+    duration_s: 5.0
+    gravity_scale: 0.0
+    analysis_window: true
+
+  - name: move_j1_zero
+    motion: quintic
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 0.0, foreArm_Joint: 0.0}
+    duration_s: 3.0
+    gravity_scale: 0.0
+
+  - name: j1_zero_hold_up
+    motion: hold
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 0.0, foreArm_Joint: 0.0}
+    duration_s: 5.0
+    gravity_scale: 0.0
+    analysis_window: true
+
+  - name: move_j1_plus_30
+    motion: quintic
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 30.0, foreArm_Joint: 0.0}
+    duration_s: 3.0
+    gravity_scale: 0.0
+
+  - name: j1_plus_30_hold
+    motion: hold
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 30.0, foreArm_Joint: 0.0}
+    duration_s: 5.0
+    gravity_scale: 0.0
+    analysis_window: true
+
+  - name: move_j1_zero_down
+    motion: quintic
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 0.0, foreArm_Joint: 0.0}
+    duration_s: 3.0
+    gravity_scale: 0.0
+
+  - name: j1_zero_hold_down
+    motion: hold
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 0.0, foreArm_Joint: 0.0}
+    duration_s: 5.0
+    gravity_scale: 0.0
+    analysis_window: true
+
+  - name: move_j2_plus_30
+    motion: quintic
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 0.0, foreArm_Joint: 30.0}
+    duration_s: 3.0
+    gravity_scale: 0.0
+
+  - name: j2_plus_30_hold
+    motion: hold
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 0.0, foreArm_Joint: 30.0}
+    duration_s: 5.0
+    gravity_scale: 0.0
+    analysis_window: true
+
+  - name: return_zero
+    motion: quintic
+    target_deg: {shoulder_Joint: 0.0, upperArm_Joint: 0.0, foreArm_Joint: 0.0}
+    duration_s: 3.0
+    gravity_scale: 0.0
+

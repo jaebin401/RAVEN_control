@@ -39,11 +39,14 @@ struct MotorFeedback {
     double temperature_celsius = 0.0;
     std::uint8_t fault_flags = 0;
     std::uint8_t mode_state = 0;
+    double bus_voltage_v = 0.0;
     MotorFeedbackSource source = MotorFeedbackSource::None;
     bool valid = false;
     bool operation_feedback_valid = false;
+    bool bus_voltage_valid = false;
     std::chrono::steady_clock::time_point received_at{};
     std::chrono::steady_clock::time_point operation_received_at{};
+    std::chrono::steady_clock::time_point bus_voltage_received_at{};
 };
 
 enum class MotorCommandResult {
@@ -79,6 +82,7 @@ public:
     [[nodiscard]] MotorCommandResult enableAll();
     [[nodiscard]] bool stopAll();
     [[nodiscard]] bool requestMechanicalPositions();
+    [[nodiscard]] bool requestBusVoltages();
     std::size_t poll();
 
     [[nodiscard]] MotorCommandResult sendMitCommand(
@@ -123,6 +127,7 @@ private:
     [[nodiscard]] bool sendStop(std::uint8_t motor_id);
     [[nodiscard]] bool sendReadMechanicalPosition(
         std::uint8_t motor_id);
+    [[nodiscard]] bool sendReadBusVoltage(std::uint8_t motor_id);
     [[nodiscard]] bool sendMitFrame(
         std::uint8_t motor_id,
         double position_rad,
