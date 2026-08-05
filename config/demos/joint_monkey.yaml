@@ -2,7 +2,7 @@ schema_version: 1
 
 demo:
   name: joint_monkey
-  phase_count: 9
+  phase_count: 11
 
 startup:
   # Uses the calibrated joint coordinates from motor_config.yaml.
@@ -76,6 +76,24 @@ phases:
       foreArm_Joint: 0.0
     transition_s: 3.0
     hold_s: 0.5
+
+  # Isolates planar coupling: shoulder yaw stays fixed while both pitch joints
+  # follow the same quintic time base.
+  - name: planar_pitch_fold
+    target_from_zero_deg:
+      shoulder_Joint: 0.0
+      upperArm_Joint: -25.0
+      foreArm_Joint: 30.0
+    transition_s: 4.0
+    hold_s: 1.0
+
+  - name: planar_pitch_center
+    target_from_zero_deg:
+      shoulder_Joint: 0.0
+      upperArm_Joint: 0.0
+      foreArm_Joint: 0.0
+    transition_s: 4.0
+    hold_s: 0.7
 
   - name: coordinated_left
     target_from_zero_deg:
