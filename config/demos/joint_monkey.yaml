@@ -1,0 +1,94 @@
+schema_version: 1
+
+demo:
+  name: joint_monkey
+  phase_count: 9
+
+startup:
+  # Uses the calibrated joint coordinates from motor_config.yaml.
+  # This does not rewrite or redefine any motor zero.
+  target: joint_zero
+  transition_s: 4.0
+  hold_s: 1.0
+
+repeat:
+  # Set mode to infinite to repeat until the user presses Q.
+  mode: finite
+  count: 1
+
+controlled_stop:
+  # Q and Ctrl+C preserve position/velocity continuity while stopping.
+  duration_s: 1.0
+
+phases:
+  - name: shoulder_positive
+    target_from_zero_deg:
+      shoulder_Joint: 30.0
+      upperArm_Joint: 0.0
+      foreArm_Joint: 0.0
+    transition_s: 3.0
+    hold_s: 0.7
+
+  - name: shoulder_negative
+    target_from_zero_deg:
+      shoulder_Joint: -30.0
+      upperArm_Joint: 0.0
+      foreArm_Joint: 0.0
+    transition_s: 5.0
+    hold_s: 0.7
+
+  - name: shoulder_center
+    target_from_zero_deg:
+      shoulder_Joint: 0.0
+      upperArm_Joint: 0.0
+      foreArm_Joint: 0.0
+    transition_s: 3.0
+    hold_s: 0.5
+
+  - name: upper_arm_showcase
+    target_from_zero_deg:
+      shoulder_Joint: 0.0
+      upperArm_Joint: -25.0
+      foreArm_Joint: 0.0
+    transition_s: 3.0
+    hold_s: 0.7
+
+  - name: upper_arm_center
+    target_from_zero_deg:
+      shoulder_Joint: 0.0
+      upperArm_Joint: 0.0
+      foreArm_Joint: 0.0
+    transition_s: 3.0
+    hold_s: 0.5
+
+  - name: forearm_showcase
+    target_from_zero_deg:
+      shoulder_Joint: 0.0
+      upperArm_Joint: 0.0
+      foreArm_Joint: 30.0
+    transition_s: 3.0
+    hold_s: 0.7
+
+  - name: forearm_center
+    target_from_zero_deg:
+      shoulder_Joint: 0.0
+      upperArm_Joint: 0.0
+      foreArm_Joint: 0.0
+    transition_s: 3.0
+    hold_s: 0.5
+
+  - name: coordinated_left
+    target_from_zero_deg:
+      shoulder_Joint: 25.0
+      upperArm_Joint: -25.0
+      foreArm_Joint: 30.0
+    transition_s: 4.0
+    hold_s: 1.0
+
+  - name: coordinated_right
+    target_from_zero_deg:
+      shoulder_Joint: -25.0
+      upperArm_Joint: -10.0
+      foreArm_Joint: 15.0
+    transition_s: 4.5
+    hold_s: 1.0

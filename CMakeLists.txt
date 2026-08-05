@@ -284,6 +284,20 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
     raven_enable_warnings(coordinated_motion_demo)
 
+    add_executable(
+        scripted_motion_demo
+        apps/scripted_motion_demo.cpp
+    )
+    target_link_libraries(
+        scripted_motion_demo
+        PRIVATE
+            raven_hal
+            raven_logging
+            raven_dynamics
+            ${RAVEN_YAML_CPP_TARGET}
+    )
+    raven_enable_warnings(scripted_motion_demo)
+
     raven_add_linux_executable(
         show_xbox_control_data
         tools/show_xbox_control_data.cpp
