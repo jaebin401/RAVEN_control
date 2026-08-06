@@ -1,0 +1,84 @@
+schema_version: 1
+
+demo:
+  name: presentation_fast
+  phase_count: 8
+
+startup:
+  # The app extends this automatically when the captured start pose requires
+  # more time to respect max_slew_rate_rad_s.
+  target: joint_zero
+  transition_s: 3.0
+  hold_s: 0.5
+
+repeat:
+  mode: finite
+  count: 1
+
+controlled_stop:
+  duration_s: 1.0
+
+phases:
+  - name: opening_left
+    target_from_zero_deg:
+      shoulder_Joint: 20.0
+      upperArm_Joint: -15.0
+      foreArm_Joint: 20.0
+    transition_s: 2.0
+    hold_s: 0.4
+
+  - name: planar_fold
+    target_from_zero_deg:
+      shoulder_Joint: 0.0
+      upperArm_Joint: -30.0
+      foreArm_Joint: 40.0
+    transition_s: 2.0
+    hold_s: 0.5
+
+  - name: sweep_right
+    target_from_zero_deg:
+      shoulder_Joint: -25.0
+      upperArm_Joint: -15.0
+      foreArm_Joint: 20.0
+    transition_s: 2.0
+    hold_s: 0.4
+
+  - name: sweep_left
+    target_from_zero_deg:
+      shoulder_Joint: 25.0
+      upperArm_Joint: -25.0
+      foreArm_Joint: 35.0
+    transition_s: 3.4
+    hold_s: 0.4
+
+  - name: reach_high
+    target_from_zero_deg:
+      shoulder_Joint: 0.0
+      upperArm_Joint: -5.0
+      foreArm_Joint: 10.0
+    transition_s: 2.2
+    hold_s: 0.35
+
+  - name: breathing_close
+    target_from_zero_deg:
+      shoulder_Joint: -20.0
+      upperArm_Joint: -30.0
+      foreArm_Joint: 45.0
+    transition_s: 2.5
+    hold_s: 0.5
+
+  - name: final_sweep
+    target_from_zero_deg:
+      shoulder_Joint: 20.0
+      upperArm_Joint: -20.0
+      foreArm_Joint: 25.0
+    transition_s: 2.7
+    hold_s: 0.4
+
+  - name: final_center
+    target_from_zero_deg:
+      shoulder_Joint: 0.0
+      upperArm_Joint: 0.0
+      foreArm_Joint: 0.0
+    transition_s: 2.3
+    hold_s: 0.7
