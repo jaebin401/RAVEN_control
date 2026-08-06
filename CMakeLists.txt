@@ -299,6 +299,20 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     raven_enable_warnings(scripted_motion_demo)
 
     add_executable(
+        teach_and_play_demo
+        apps/teach_and_play_demo.cpp
+    )
+    target_link_libraries(
+        teach_and_play_demo
+        PRIVATE
+            raven_hal
+            raven_logging
+            raven_dynamics
+            ${RAVEN_YAML_CPP_TARGET}
+    )
+    raven_enable_warnings(teach_and_play_demo)
+
+    add_executable(
         joint_characterization
         tests/hardware/joint_characterization.cpp
     )
