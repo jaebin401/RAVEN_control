@@ -4,4 +4,3 @@ build/
 config/joint_limits.yaml
 config/motor_config.yaml
 logs/
-recordings/

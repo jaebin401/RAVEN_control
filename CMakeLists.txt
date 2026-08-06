@@ -308,7 +308,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             raven_hal
             raven_logging
             raven_dynamics
-            ${RAVEN_YAML_CPP_TARGET}
     )
     raven_enable_warnings(teach_and_play_demo)
 

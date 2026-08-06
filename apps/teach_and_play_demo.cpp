@@ -5,8 +5,6 @@
 #include "raven_control/logging/motion_logger.hpp"
 #include "raven_control/safety/joint_limiter.hpp"
 
-#include <yaml-cpp/yaml.h>
-
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -15,8 +13,6 @@
 #include <csignal>
 #include <cstdint>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -61,9 +57,8 @@ struct TaughtPose {
 };
 
 struct TeachSession {
-    std::string name;
+    std::string name = "one_shot";
     std::uint64_t repeat_count = 1;
-    bool return_to_start = true;
     double default_transition_seconds = 3.0;
     double default_hold_seconds = 0.7;
     double return_transition_seconds = 3.0;
@@ -156,12 +151,6 @@ enum class RunResult {
     FeedbackHold,
 };
 
-enum class StartupAction {
-    Play,
-    Teach,
-    Cancel,
-};
-
 volatile std::sig_atomic_t stop_requested = 0;
 
 void handleSignal(int)
@@ -169,257 +158,9 @@ void handleSignal(int)
     stop_requested = 1;
 }
 
-double degreesToRadians(double degrees)
-{
-    return degrees * PI / 180.0;
-}
-
 double radiansToDegrees(double radians)
 {
     return radians * 180.0 / PI;
-}
-
-template <typename T>
-T requiredValue(
-    const YAML::Node& node,
-    const char* field,
-    const std::string& context)
-{
-    const YAML::Node value = node[field];
-    if (!value)
-        throw std::runtime_error(context + " is missing '" + field + "'");
-    try {
-        return value.as<T>();
-    } catch (const YAML::Exception& error) {
-        throw std::runtime_error(
-            context + " has invalid '" + field + "': " + error.what());
-    }
-}
-
-void requireMap(const YAML::Node& node, const std::string& context)
-{
-    if (!node || !node.IsMap())
-        throw std::runtime_error(context + " must be a map");
-}
-
-void requireFiniteNonnegative(
-    double value,
-    const std::string& field,
-    bool allow_zero)
-{
-    if (!std::isfinite(value) || value < 0.0 ||
-        (!allow_zero && value == 0.0)) {
-        throw std::runtime_error(
-            field + (allow_zero
-                ? " must be finite and nonnegative"
-                : " must be finite and positive"));
-    }
-}
-
-std::string sessionNameFromPath(const std::string& path)
-{
-    const std::string stem = std::filesystem::path(path).stem().string();
-    return stem.empty() ? "teach_and_play" : stem;
-}
-
-TeachSession loadTeachSession(const std::string& path, bool& existed)
-{
-    existed = std::filesystem::exists(path);
-    if (!existed) {
-        TeachSession session;
-        session.name = sessionNameFromPath(path);
-        return session;
-    }
-
-    YAML::Node root;
-    try {
-        root = YAML::LoadFile(path);
-    } catch (const YAML::Exception& error) {
-        throw std::runtime_error(
-            "Cannot load teach session '" + path + "': " + error.what());
-    }
-    requireMap(root, "Teach session root");
-    const int schema_version =
-        requiredValue<int>(root, "schema_version", "Teach session");
-    if (schema_version != 1) {
-        throw std::runtime_error(
-            "Unsupported teach session schema_version: " +
-            std::to_string(schema_version));
-    }
-
-    TeachSession session;
-    const YAML::Node session_node = root["session"];
-    requireMap(session_node, "session");
-    session.name = requiredValue<std::string>(
-        session_node, "name", "session");
-    if (session.name.empty())
-        throw std::runtime_error("session.name must not be empty");
-    session.repeat_count = requiredValue<std::uint64_t>(
-        session_node, "repeat_count", "session");
-    if (session.repeat_count == 0)
-        throw std::runtime_error("session.repeat_count must be at least 1");
-    session.return_to_start = requiredValue<bool>(
-        session_node, "return_to_start", "session");
-    if (!session.return_to_start) {
-        throw std::runtime_error(
-            "session.return_to_start must remain true for this demo");
-    }
-    session.default_transition_seconds = requiredValue<double>(
-        session_node, "default_transition_s", "session");
-    session.default_hold_seconds = requiredValue<double>(
-        session_node, "default_hold_s", "session");
-    session.return_transition_seconds = requiredValue<double>(
-        session_node, "return_transition_s", "session");
-    session.controlled_stop_seconds = requiredValue<double>(
-        session_node, "controlled_stop_s", "session");
-    requireFiniteNonnegative(
-        session.default_transition_seconds,
-        "session.default_transition_s",
-        false);
-    requireFiniteNonnegative(
-        session.default_hold_seconds,
-        "session.default_hold_s",
-        true);
-    requireFiniteNonnegative(
-        session.return_transition_seconds,
-        "session.return_transition_s",
-        false);
-    requireFiniteNonnegative(
-        session.controlled_stop_seconds,
-        "session.controlled_stop_s",
-        false);
-
-    const std::size_t declared_pose_count =
-        requiredValue<std::size_t>(session_node, "pose_count", "session");
-    const YAML::Node poses = root["poses"];
-    if (!poses || !poses.IsSequence())
-        throw std::runtime_error("poses must be a sequence");
-    if (poses.size() != declared_pose_count) {
-        throw std::runtime_error(
-            "session.pose_count does not match poses sequence size");
-    }
-
-    session.poses.reserve(poses.size());
-    for (std::size_t pose_index = 0; pose_index < poses.size(); ++pose_index) {
-        const YAML::Node pose_node = poses[pose_index];
-        const std::string context =
-            "poses[" + std::to_string(pose_index) + "]";
-        requireMap(pose_node, context);
-        TaughtPose pose;
-        pose.name = requiredValue<std::string>(pose_node, "name", context);
-        if (pose.name.empty())
-            throw std::runtime_error(context + ".name must not be empty");
-        pose.transition_seconds = requiredValue<double>(
-            pose_node, "transition_s", context);
-        pose.hold_seconds = requiredValue<double>(
-            pose_node, "hold_s", context);
-        requireFiniteNonnegative(
-            pose.transition_seconds,
-            context + ".transition_s",
-            false);
-        requireFiniteNonnegative(
-            pose.hold_seconds,
-            context + ".hold_s",
-            true);
-
-        const YAML::Node joints = pose_node["joint_position_deg"];
-        requireMap(joints, context + ".joint_position_deg");
-        if (joints.size() != JOINT_NAMES.size()) {
-            throw std::runtime_error(
-                context + ".joint_position_deg must contain exactly "
-                "three joints");
-        }
-        for (const auto& entry : joints) {
-            const std::string joint_name = entry.first.as<std::string>();
-            if (std::find(
-                    JOINT_NAMES.begin(), JOINT_NAMES.end(), joint_name) ==
-                JOINT_NAMES.end()) {
-                throw std::runtime_error(
-                    context + " contains unknown joint '" + joint_name + "'");
-            }
-        }
-        for (std::size_t index = 0; index < JOINT_NAMES.size(); ++index) {
-            const double degrees = requiredValue<double>(
-                joints, JOINT_NAMES[index], context + ".joint_position_deg");
-            if (!std::isfinite(degrees)) {
-                throw std::runtime_error(
-                    context + " has a non-finite joint position");
-            }
-            pose.position_rad[index] = degreesToRadians(degrees);
-        }
-        session.poses.push_back(std::move(pose));
-    }
-    return session;
-}
-
-void saveTeachSession(
-    const TeachSession& session,
-    const std::string& path)
-{
-    const std::filesystem::path output_path(path);
-    if (output_path.has_parent_path())
-        std::filesystem::create_directories(output_path.parent_path());
-
-    YAML::Emitter output;
-    output.SetDoublePrecision(10);
-    output << YAML::BeginMap;
-    output << YAML::Key << "schema_version" << YAML::Value << 1;
-    output << YAML::Key << "session" << YAML::Value << YAML::BeginMap;
-    output << YAML::Key << "name" << YAML::Value << session.name;
-    output << YAML::Key << "pose_count" << YAML::Value
-           << session.poses.size();
-    output << YAML::Key << "repeat_count" << YAML::Value
-           << session.repeat_count;
-    output << YAML::Key << "return_to_start" << YAML::Value << true;
-    output << YAML::Key << "default_transition_s" << YAML::Value
-           << session.default_transition_seconds;
-    output << YAML::Key << "default_hold_s" << YAML::Value
-           << session.default_hold_seconds;
-    output << YAML::Key << "return_transition_s" << YAML::Value
-           << session.return_transition_seconds;
-    output << YAML::Key << "controlled_stop_s" << YAML::Value
-           << session.controlled_stop_seconds;
-    output << YAML::EndMap;
-    output << YAML::Key << "poses" << YAML::Value << YAML::BeginSeq;
-    for (const TaughtPose& pose : session.poses) {
-        output << YAML::BeginMap;
-        output << YAML::Key << "name" << YAML::Value << pose.name;
-        output << YAML::Key << "joint_position_deg" << YAML::Value
-               << YAML::BeginMap;
-        for (std::size_t index = 0; index < JOINT_NAMES.size(); ++index) {
-            output << YAML::Key << JOINT_NAMES[index] << YAML::Value
-                   << radiansToDegrees(pose.position_rad[index]);
-        }
-        output << YAML::EndMap;
-        output << YAML::Key << "transition_s" << YAML::Value
-               << pose.transition_seconds;
-        output << YAML::Key << "hold_s" << YAML::Value
-               << pose.hold_seconds;
-        output << YAML::EndMap;
-    }
-    output << YAML::EndSeq;
-    output << YAML::EndMap;
-    if (!output.good()) {
-        throw std::runtime_error(
-            "Failed to serialize teach session: " + output.GetLastError());
-    }
-
-    const std::filesystem::path temporary_path = output_path.string() + ".tmp";
-    {
-        std::ofstream file(temporary_path, std::ios::trunc);
-        if (!file)
-            throw std::runtime_error("Cannot write '" + path + "'");
-        file << output.c_str() << '\n';
-        if (!file)
-            throw std::runtime_error("Failed while writing '" + path + "'");
-    }
-    std::error_code error;
-    std::filesystem::rename(temporary_path, output_path, error);
-    if (error) {
-        throw std::runtime_error(
-            "Cannot finalize teach session '" + path + "': " +
-            error.message());
-    }
 }
 
 class TerminalMode {
@@ -900,43 +641,6 @@ void printDisabledStatus(
     std::cout << std::flush;
 }
 
-StartupAction chooseStartupAction(
-    const TeachSession& session,
-    raven_control::hal::MotorDriver& driver,
-    const raven_control::config::MotorRuntimeConfig& config)
-{
-    if (session.poses.empty())
-        return StartupAction::Teach;
-    std::cout
-        << "\nLoaded " << session.poses.size() << " taught pose(s).\n"
-        << "P: play the saved session\n"
-        << "T: replace it with a new teaching session\n"
-        << "Q: cancel while motors remain disabled\n"
-        << std::flush;
-    auto next_request = std::chrono::steady_clock::now();
-    auto next_status = next_request;
-    while (true) {
-        if (stop_requested != 0)
-            return StartupAction::Cancel;
-        serviceDisabledFeedback(driver, config, next_request);
-        const auto now = std::chrono::steady_clock::now();
-        if (now >= next_status) {
-            printDisabledStatus("Ready", driver, session.poses.size());
-            next_status = now + std::chrono::milliseconds(200);
-        }
-        if (keyAvailable()) {
-            const auto key = readKey();
-            if (key && (*key == 'p' || *key == 'P'))
-                return StartupAction::Play;
-            if (key && (*key == 't' || *key == 'T'))
-                return StartupAction::Teach;
-            if (key && (*key == 'q' || *key == 'Q'))
-                return StartupAction::Cancel;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-}
-
 bool teachPoses(
     TeachSession& session,
     raven_control::hal::MotorDriver& driver,
@@ -949,8 +653,9 @@ bool teachPoses(
         << "moving it by hand.\n"
         << "SPACE: capture the current calibrated joint pose\n"
         << "X or Backspace: delete the last pose\n"
-        << "ENTER: finish teaching and save the YAML\n"
-        << "Q: cancel without changing the existing YAML\n"
+        << "C: clear every captured pose\n"
+        << "ENTER: finish this in-memory teaching session\n"
+        << "Q: cancel and discard every captured pose\n"
         << std::flush;
 
     auto next_request = std::chrono::steady_clock::now();
@@ -973,6 +678,11 @@ bool teachPoses(
             continue;
         if (*key == 'q' || *key == 'Q')
             return false;
+        if (*key == 'c' || *key == 'C') {
+            session.poses.clear();
+            std::cout << "\nCleared every taught pose\n";
+            continue;
+        }
         if (*key == 'x' || *key == 'X' || *key == '\b' ||
             static_cast<unsigned char>(*key) == 127U) {
             if (!session.poses.empty()) {
@@ -1021,8 +731,8 @@ bool teachPoses(
 void printSession(const TeachSession& session)
 {
     std::cout
-        << "\nTeach session: " << session.name << '\n'
-        << "Repeat: " << session.repeat_count << " cycle(s)\n"
+        << "\nIn-memory taught poses: " << session.poses.size() << '\n'
+        << "Playback: one cycle\n"
         << "Natural completion: return to execution-time start pose\n"
         << std::fixed << std::setprecision(1);
     for (std::size_t pose_index = 0;
@@ -1539,14 +1249,13 @@ std::string logPrefix(const std::string& session_name)
 
 }  // namespace
 
-int main(int argc, char* argv[])
+int main(int argc, char*[])
 {
-    if (argc != 2) {
-        std::cerr << "Usage: teach_and_play_demo <teach_session.yaml>\n";
+    if (argc != 1) {
+        std::cerr << "Usage: teach_and_play_demo\n";
         return 2;
     }
 
-    const std::string session_path = argv[1];
     std::signal(SIGINT, handleSignal);
     std::signal(SIGTERM, handleSignal);
 
@@ -1555,9 +1264,7 @@ int main(int argc, char* argv[])
     bool log_saved = false;
 
     try {
-        bool session_existed = false;
-        TeachSession session = loadTeachSession(
-            session_path, session_existed);
+        TeachSession session;
         auto limiters = raven_control::safety::loadJointLimiters(
             JOINT_LIMITS_PATH);
         const auto motor_config =
@@ -1579,8 +1286,7 @@ int main(int argc, char* argv[])
 
         std::cout
             << "\nRAVEN teach and play demo\n"
-            << "Teach session: " << session_path
-            << (session_existed ? " (loaded)\n" : " (new)\n")
+            << "Session storage: in memory only; every run starts empty\n"
             << "CAN interface: " << CAN_INTERFACE << '\n'
             << "Joint limits: " << JOINT_LIMITS_PATH << '\n'
             << "Motor config: " << MOTOR_CONFIG_PATH << '\n'
@@ -1588,25 +1294,14 @@ int main(int argc, char* argv[])
             << "read-only raven_joint_state_bridge.\n";
 
         TerminalMode terminal;
-        const StartupAction action = chooseStartupAction(
-            session, driver, motor_config);
-        if (action == StartupAction::Cancel) {
-            std::cout << "\nTeach and play cancelled\n";
+        if (!teachPoses(
+                session,
+                driver,
+                motor_config,
+                limiters)) {
+            std::cout
+                << "\nTeaching cancelled; captured poses were discarded\n";
             return 0;
-        }
-        if (action == StartupAction::Teach) {
-            TeachSession candidate = session;
-            if (!teachPoses(
-                    candidate,
-                    driver,
-                    motor_config,
-                    limiters)) {
-                std::cout << "\nTeaching cancelled; YAML was not changed\n";
-                return 0;
-            }
-            saveTeachSession(candidate, session_path);
-            session = std::move(candidate);
-            std::cout << "\nTeach session saved: " << session_path << '\n';
         }
 
         printSession(session);
