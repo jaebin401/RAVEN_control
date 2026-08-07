@@ -28,7 +28,11 @@
 namespace {
 
 constexpr double PI = 3.14159265358979323846;
-constexpr double STEP_DEG = 2.0;
+constexpr double STEP_DEG = 1.0;
+constexpr double MAX_COMMAND_ACCELERATION_RAD_S2 = 3.0;
+constexpr double POSITION_RESPONSE_GAIN_PER_S = 8.0;
+constexpr double POSITION_SETTLE_TOLERANCE_RAD = 1.74532925199e-4;
+constexpr double VELOCITY_SETTLE_TOLERANCE_RAD_S = 5.0e-3;
 
 struct JointSpec {
     const char* name;
@@ -38,16 +42,22 @@ struct JointSpec {
 
 constexpr std::array<JointSpec, 3> JOINTS{{
     {"shoulder_Joint", 'w', 's'},
-    {"upperArm_Joint", 'e', 'd'},
+    {"upperArm_Joint", 'd', 'e'},
     {"foreArm_Joint", 'r', 'f'},
 }};
 
 struct ControlState {
     std::atomic<double> target_rad{0.0};
     std::atomic<double> setpoint_rad{0.0};
+    std::atomic<double> setpoint_velocity_rad_s{0.0};
     std::atomic<double> kp{0.0};
     std::atomic<double> kd{0.0};
     double max_slew_rate_rad_s = 0.0;
+};
+
+struct SmoothedCommand {
+    double position_rad = 0.0;
+    double velocity_rad_s = 0.0;
 };
 
 using JointBindings = std::array<
@@ -64,6 +74,57 @@ double radiansToDegrees(double radians)
 double degreesToRadians(double degrees)
 {
     return degrees * PI / 180.0;
+}
+
+double moveToward(
+    double current,
+    double target,
+    double max_delta)
+{
+    return current + std::clamp(
+        target - current,
+        -max_delta,
+        max_delta);
+}
+
+SmoothedCommand advanceSmoothedCommand(
+    double current_position_rad,
+    double current_velocity_rad_s,
+    double target_position_rad,
+    double max_velocity_rad_s,
+    double control_period_seconds)
+{
+    const double position_error_rad =
+        target_position_rad - current_position_rad;
+    const double max_velocity_change_rad_s =
+        MAX_COMMAND_ACCELERATION_RAD_S2 *
+        control_period_seconds;
+
+    if (std::abs(position_error_rad) <=
+            POSITION_SETTLE_TOLERANCE_RAD &&
+        std::abs(current_velocity_rad_s) <=
+            VELOCITY_SETTLE_TOLERANCE_RAD_S) {
+        return {target_position_rad, 0.0};
+    }
+
+    // Slow down continuously as the command approaches its target, while
+    // retaining the configured maximum slew rate. Limiting the velocity
+    // change on each cycle avoids the instantaneous velocity step that
+    // occurred on every key press with the previous position-only limiter.
+    const double desired_velocity_rad_s = std::clamp(
+        POSITION_RESPONSE_GAIN_PER_S * position_error_rad,
+        -max_velocity_rad_s,
+        max_velocity_rad_s);
+    const double next_velocity_rad_s = moveToward(
+        current_velocity_rad_s,
+        desired_velocity_rad_s,
+        max_velocity_change_rad_s);
+    const double next_position_rad =
+        current_position_rad +
+        0.5 * (current_velocity_rad_s + next_velocity_rad_s) *
+            control_period_seconds;
+
+    return {next_position_rad, next_velocity_rad_s};
 }
 
 void handleSignal(int)
@@ -203,8 +264,11 @@ void printHelp(const JointBindings& bindings)
         << "RAVEN multi-joint debug controller\n"
         << "Space : enable/stop all motors\n"
         << "W/S   : shoulder +/-\n"
-        << "E/D   : upper arm +/-\n"
+        << "E/D   : upper arm -/+\n"
         << "R/F   : forearm +/-\n"
+        << "Step  : " << STEP_DEG << " deg per key press\n"
+        << "Accel : " << MAX_COMMAND_ACCELERATION_RAD_S2
+        << " rad/s^2 command limit\n"
         << "/     : enter three targets in degrees\n"
         << "Q     : quit\n"
         << "----------------------------------------\n";
@@ -295,24 +359,24 @@ void controlLoop(
                     states[index].target_rad.load();
                 const double current =
                     states[index].setpoint_rad.load();
-                const double difference = target - current;
-                const double max_step_rad =
-                    states[index].max_slew_rate_rad_s *
-                    control_period_seconds;
-                const double next =
-                    std::abs(difference) <= max_step_rad
-                    ? target
-                    : current + std::copysign(
-                          max_step_rad,
-                          difference);
-                const double target_velocity_rad_s =
-                    (next - current) / control_period_seconds;
-                states[index].setpoint_rad.store(next);
+                const double current_velocity_rad_s =
+                    states[index].setpoint_velocity_rad_s.load();
+                const SmoothedCommand command =
+                    advanceSmoothedCommand(
+                        current,
+                        current_velocity_rad_s,
+                        target,
+                        states[index].max_slew_rate_rad_s,
+                        control_period_seconds);
+                states[index].setpoint_rad.store(
+                    command.position_rad);
+                states[index].setpoint_velocity_rad_s.store(
+                    command.velocity_rad_s);
 
                 const auto result = driver.sendMitCommand(
                     JOINTS[index].name,
-                    next,
-                    target_velocity_rad_s,
+                    command.position_rad,
+                    command.velocity_rad_s,
                     states[index].kp.load(),
                     states[index].kd.load(),
                     0.0);
@@ -334,6 +398,9 @@ void controlLoop(
                     break;
                 }
             }
+        } else {
+            for (auto& state : states)
+                state.setpoint_velocity_rad_s.store(0.0);
         }
 
         if (monitor_active.load() && now >= next_status) {
@@ -369,6 +436,7 @@ bool initializeTargetsFromFeedback(
             return false;
         }
         states[index].setpoint_rad.store(feedback->position_rad);
+        states[index].setpoint_velocity_rad_s.store(0.0);
         states[index].target_rad.store(feedback->position_rad);
     }
     return true;
