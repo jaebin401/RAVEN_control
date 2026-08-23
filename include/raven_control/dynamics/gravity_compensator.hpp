@@ -1,14 +1,10 @@
 #pragma once
 
+#include "raven_control/dynamics/gravity_model.hpp"
+
 #include <array>
-#include <cstddef>
 
 namespace raven_control::dynamics {
-
-inline constexpr std::size_t RAVEN_JOINT_COUNT = 3;
-
-using Vector3 = std::array<double, 3>;
-using JointVector = std::array<double, RAVEN_JOINT_COUNT>;
 
 struct GravityLinkParameters {
     Vector3 joint_origin_parent_m{};
@@ -25,13 +21,12 @@ struct GravityModelParameters {
     void validate() const;
 };
 
-class GravityCompensator {
+class GravityCompensator final : public GravityModel {
 public:
     explicit GravityCompensator(GravityModelParameters parameters);
 
-    // Returns joint-coordinate torque that balances gravity at q.
     [[nodiscard]] JointVector compute(
-        const JointVector& joint_positions_rad) const;
+        const JointVector& joint_positions_rad) const override;
 
     [[nodiscard]] const GravityModelParameters& parameters() const noexcept;
 
