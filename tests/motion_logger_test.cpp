@@ -46,6 +46,11 @@ int main()
     joint.position_error_rad = 0.1;
     joint.estimated_p_torque_nm = 2.0;
     joint.estimated_d_torque_nm = -0.25;
+    joint.raw_gravity_torque_nm = 1.5;
+    joint.ramped_gravity_torque_nm = 0.15;
+    joint.limited_gravity_torque_nm = 0.1;
+    joint.gravity_scale = 0.1;
+    joint.gravity_ramp_factor = 1.0;
     joint.sent_feedforward_torque_nm = 0.0;
     joint.estimated_control_torque_nm = 1.75;
     joint.measured_torque_nm = 1.7;
@@ -57,6 +62,10 @@ int main()
     joint.feedback_valid = true;
     joint.operation_feedback_valid = true;
     joint.bus_voltage_valid = true;
+    joint.gravity_enabled = true;
+    joint.gravity_dry_run = true;
+    joint.gravity_input_valid = true;
+    joint.gravity_torque_clamped = true;
     joint.motor_fault_flags = 0;
     joint.motor_mode_state = 2;
     joint.kp = 20.0;
@@ -96,6 +105,14 @@ int main()
         csv.find("shoulder_Joint.measured_torque_nm") !=
             std::string::npos,
         "CSV must include Type 2 measured torque columns");
+    check(
+        csv.find("shoulder_Joint.raw_gravity_torque_nm") !=
+            std::string::npos,
+        "CSV must include raw gravity torque columns");
+    check(
+        csv.find("shoulder_Joint.gravity_torque_clamped") !=
+            std::string::npos,
+        "CSV must include gravity safety state columns");
     check(
         csv.find("shoulder_Joint.bus_voltage_v") !=
             std::string::npos,

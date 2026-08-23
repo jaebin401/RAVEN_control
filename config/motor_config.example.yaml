@@ -4,7 +4,20 @@ runtime:
   control_period_ms: 20
   feedback_timeout_ms: 250
   position_request_period_ms: 100
-  gravity_compensation_enabled: true
+
+# Safe commissioning defaults: this parses the URDF and computes g(q), but
+# sends zero feedforward torque until dry_run is false, scale is positive,
+# and non-zero per-joint torque limits are configured deliberately.
+gravity_compensation:
+  urdf_path: "../RAVEN_hardware/urdf/urdf/RAVEN.urdf"
+  enabled: false
+  dry_run: true
+  scale: 0.0
+  ramp_duration_ms: 3000
+  max_joint_torque_nm:
+    shoulder_Joint: 0.0
+    upperArm_Joint: 0.0
+    foreArm_Joint: 0.0
 
 joints:
   shoulder_Joint:

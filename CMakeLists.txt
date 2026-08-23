@@ -130,6 +130,21 @@ target_include_directories(
 )
 raven_enable_warnings(raven_dynamics)
 
+add_library(
+    raven_gravity_control
+    STATIC
+    src/control/gravity_feedforward_controller.cpp
+)
+target_include_directories(
+    raven_gravity_control
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    raven_gravity_control
+    PUBLIC raven_dynamics
+)
+raven_enable_warnings(raven_gravity_control)
+
 if(RAVEN_ENABLE_PINOCCHIO_DYNAMICS)
     add_library(
         raven_pinocchio_dynamics
@@ -221,8 +236,17 @@ if(BUILD_TESTING)
         tests/motor_config_test.cpp
     )
     target_link_libraries(motor_config_test PRIVATE raven_hal)
+    target_compile_definitions(
+        motor_config_test
+        PRIVATE RAVEN_HAS_YAML_CPP=${RAVEN_HAS_YAML_CPP}
+    )
     raven_enable_warnings(motor_config_test)
-    add_test(NAME motor_config_test COMMAND motor_config_test)
+    add_test(
+        NAME motor_config_test
+        COMMAND
+            motor_config_test
+            "${CMAKE_CURRENT_SOURCE_DIR}/config/motor_config.example.yaml"
+    )
 
     add_executable(
         motion_logger_test
@@ -244,6 +268,20 @@ if(BUILD_TESTING)
     add_test(
         NAME gravity_compensator_test
         COMMAND gravity_compensator_test
+    )
+
+    add_executable(
+        gravity_feedforward_controller_test
+        tests/gravity_feedforward_controller_test.cpp
+    )
+    target_link_libraries(
+        gravity_feedforward_controller_test
+        PRIVATE raven_gravity_control
+    )
+    raven_enable_warnings(gravity_feedforward_controller_test)
+    add_test(
+        NAME gravity_feedforward_controller_test
+        COMMAND gravity_feedforward_controller_test
     )
 
     if(RAVEN_ENABLE_PINOCCHIO_DYNAMICS)
@@ -337,42 +375,54 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(position_control_multi PRIVATE raven_hal)
     raven_enable_warnings(position_control_multi)
 
-    add_executable(
-        coordinated_motion_demo
-        apps/coordinated_motion_demo.cpp
-    )
-    target_link_libraries(
-        coordinated_motion_demo
-        PRIVATE raven_hal raven_logging raven_dynamics
-    )
-    raven_enable_warnings(coordinated_motion_demo)
+    if(RAVEN_ENABLE_PINOCCHIO_DYNAMICS)
+        add_executable(
+            coordinated_motion_demo
+            apps/coordinated_motion_demo.cpp
+        )
+        target_link_libraries(
+            coordinated_motion_demo
+            PRIVATE
+                raven_hal
+                raven_logging
+                raven_gravity_control
+                raven_pinocchio_dynamics
+        )
+        raven_enable_warnings(coordinated_motion_demo)
 
-    add_executable(
-        scripted_motion_demo
-        apps/scripted_motion_demo.cpp
-    )
-    target_link_libraries(
-        scripted_motion_demo
-        PRIVATE
-            raven_hal
-            raven_logging
-            raven_dynamics
-            ${RAVEN_YAML_CPP_TARGET}
-    )
-    raven_enable_warnings(scripted_motion_demo)
+        add_executable(
+            scripted_motion_demo
+            apps/scripted_motion_demo.cpp
+        )
+        target_link_libraries(
+            scripted_motion_demo
+            PRIVATE
+                raven_hal
+                raven_logging
+                raven_gravity_control
+                raven_pinocchio_dynamics
+                ${RAVEN_YAML_CPP_TARGET}
+        )
+        raven_enable_warnings(scripted_motion_demo)
 
-    add_executable(
-        teach_and_play_demo
-        apps/teach_and_play_demo.cpp
-    )
-    target_link_libraries(
-        teach_and_play_demo
-        PRIVATE
-            raven_hal
-            raven_logging
-            raven_dynamics
-    )
-    raven_enable_warnings(teach_and_play_demo)
+        add_executable(
+            teach_and_play_demo
+            apps/teach_and_play_demo.cpp
+        )
+        target_link_libraries(
+            teach_and_play_demo
+            PRIVATE
+                raven_hal
+                raven_logging
+                raven_gravity_control
+                raven_pinocchio_dynamics
+        )
+        raven_enable_warnings(teach_and_play_demo)
+    else()
+        message(WARNING
+            "Pinocchio dynamics are disabled. Gravity-integrated motion "
+            "demos will not be built.")
+    endif()
 
     add_executable(
         joint_characterization

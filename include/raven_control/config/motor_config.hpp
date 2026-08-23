@@ -1,5 +1,7 @@
 #pragma once
 
+#include "raven_control/config/gravity_compensation_config.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -28,7 +30,7 @@ struct MotorRuntimeConfig {
     std::chrono::milliseconds control_period{20};
     std::chrono::milliseconds feedback_timeout{250};
     std::chrono::milliseconds position_request_period{100};
-    bool gravity_compensation_enabled = true;
+    GravityCompensationConfig gravity_compensation;
     std::vector<JointMotorRuntimeConfig> joints;
 
     void validate() const;

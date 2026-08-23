@@ -71,13 +71,29 @@ degrees:
 ```
 
 `RAVEN_URDF_PATH` is a CMake cache path used only to locate the URDF for
-automated tests. Runtime applications should pass the URDF path to
-`PinocchioGravityModel` from their own command-line or configuration layer.
+automated tests. Runtime motion applications load `urdf_path` from the
+top-level `gravity_compensation` section of `motor_config.yaml`.
 
-## Current integration boundary
+## Runtime integration
 
-This implementation produces joint-coordinate `g(q)`. It intentionally does
-not perform motor sign conversion, ramping, torque limiting, MIT command
-packing, or CAN transmission. The motor feedforward path should switch to
-this model only after the analytic comparison passes on the target Ubuntu
-system and joint/motor torque signs are validated with supported hardware.
+`coordinated_motion_demo`, `scripted_motion_demo`, and
+`teach_and_play_demo` construct the model once and use measured Type 2 joint
+positions on every control cycle. `GravityFeedforwardController` applies the
+configured scale, enable ramp, and per-joint torque limits. In dry-run mode it
+records the calculated values but commands zero feedforward torque.
+
+The controller output remains in the joint coordinate system. The existing
+`MotorDriver::sendMitCommand()` path performs the virtual-work-consistent
+conversion
+
+```text
+motor torque = position_sign * joint torque / joint_to_motor_ratio
+```
+
+before the RS02 MIT command is packed and sent. No application-local sign
+table is used.
+
+For commissioning, retain `dry_run: true` until measured joint angles,
+Pinocchio torque signs, URDF inertial parameters, and the configured joint
+limits have been checked on the target mechanism. Then start live testing
+with a small scale and supported links.

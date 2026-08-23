@@ -79,6 +79,13 @@ def print_summary(path, rows, joints):
         errors = finite_values(rows, f"{joint}.position_error_rad")
         p_torque = finite_values(rows, f"{joint}.estimated_p_torque_nm")
         d_torque = finite_values(rows, f"{joint}.estimated_d_torque_nm")
+        raw_gravity = finite_values(rows, f"{joint}.raw_gravity_torque_nm")
+        limited_gravity = finite_values(
+            rows, f"{joint}.limited_gravity_torque_nm"
+        )
+        sent_feedforward = finite_values(
+            rows, f"{joint}.sent_feedforward_torque_nm"
+        )
         control_torque = finite_values(
             rows, f"{joint}.estimated_control_torque_nm"
         )
@@ -106,6 +113,25 @@ def print_summary(path, rows, joints):
             print(
                 "  estimated |D torque| max: "
                 f"{max(abs(value) for value in d_torque):.3f} N.m"
+            )
+        if raw_gravity:
+            clamp_count = sum(
+                int(row.get(f"{joint}.gravity_torque_clamped", "0"))
+                for row in rows
+            )
+            valid_count = sum(
+                int(row.get(f"{joint}.gravity_input_valid", "0"))
+                for row in rows
+            )
+            print(
+                "  gravity |raw/limited/sent| max [N.m]: "
+                f"{max(abs(value) for value in raw_gravity):.3f} / "
+                f"{max(abs(value) for value in limited_gravity):.3f} / "
+                f"{max(abs(value) for value in sent_feedforward):.3f}"
+            )
+            print(
+                "  gravity valid/clamped samples: "
+                f"{valid_count}/{clamp_count} of {len(rows)}"
             )
         if control_torque:
             print(

@@ -20,6 +20,11 @@ struct JointMotionSample {
     double position_error_rad = 0.0;
     double estimated_p_torque_nm = 0.0;
     double estimated_d_torque_nm = 0.0;
+    double raw_gravity_torque_nm = 0.0;
+    double ramped_gravity_torque_nm = 0.0;
+    double limited_gravity_torque_nm = 0.0;
+    double gravity_scale = 0.0;
+    double gravity_ramp_factor = 0.0;
     double sent_feedforward_torque_nm = 0.0;
     double estimated_control_torque_nm = 0.0;
     double measured_torque_nm = 0.0;
@@ -35,6 +40,10 @@ struct JointMotionSample {
     bool feedback_valid = false;
     bool operation_feedback_valid = false;
     bool bus_voltage_valid = false;
+    bool gravity_enabled = false;
+    bool gravity_dry_run = true;
+    bool gravity_input_valid = false;
+    bool gravity_torque_clamped = false;
 };
 
 struct MotionSample {

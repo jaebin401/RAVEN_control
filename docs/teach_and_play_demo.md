@@ -45,7 +45,10 @@ configured `max_slew_rate_rad_s` requires more time.
 - `Q` during motion performs a 1.0 second controlled stop and holds the
   resulting pose.
 - Natural completion returns to the execution-time start pose.
-- `G` ramps gravity compensation on or off using the existing policy.
+- `G` toggles the configured Pinocchio gravity feedforward controller.
+  Enabling ramps upward; disabling commands zero new gravity torque
+  immediately. `dry_run: true` still logs the calculated torque but sends
+  zero feedforward torque.
 - Final Hold continues until `SPACE` disables all motors and exits.
 
 Type 2 timeout keeps the existing latched Feedback Hold policy. Hard limits,

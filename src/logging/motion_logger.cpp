@@ -91,6 +91,11 @@ void MotionLogger::saveCsv(const std::string& path) const
             << ',' << prefix << ".position_error_rad"
             << ',' << prefix << ".estimated_p_torque_nm"
             << ',' << prefix << ".estimated_d_torque_nm"
+            << ',' << prefix << ".raw_gravity_torque_nm"
+            << ',' << prefix << ".ramped_gravity_torque_nm"
+            << ',' << prefix << ".limited_gravity_torque_nm"
+            << ',' << prefix << ".gravity_scale"
+            << ',' << prefix << ".gravity_ramp_factor"
             << ',' << prefix << ".sent_feedforward_torque_nm"
             << ',' << prefix << ".estimated_control_torque_nm"
             << ',' << prefix << ".measured_torque_nm"
@@ -102,6 +107,10 @@ void MotionLogger::saveCsv(const std::string& path) const
             << ',' << prefix << ".feedback_valid"
             << ',' << prefix << ".operation_feedback_valid"
             << ',' << prefix << ".bus_voltage_valid"
+            << ',' << prefix << ".gravity_enabled"
+            << ',' << prefix << ".gravity_dry_run"
+            << ',' << prefix << ".gravity_input_valid"
+            << ',' << prefix << ".gravity_torque_clamped"
             << ',' << prefix << ".motor_fault_flags"
             << ',' << prefix << ".motor_mode_state"
             << ',' << prefix << ".kp"
@@ -162,6 +171,16 @@ void MotionLogger::saveCsv(const std::string& path) const
             output << ',';
             writeNumber(output, joint.estimated_d_torque_nm);
             output << ',';
+            writeNumber(output, joint.raw_gravity_torque_nm);
+            output << ',';
+            writeNumber(output, joint.ramped_gravity_torque_nm);
+            output << ',';
+            writeNumber(output, joint.limited_gravity_torque_nm);
+            output << ',';
+            writeNumber(output, joint.gravity_scale);
+            output << ',';
+            writeNumber(output, joint.gravity_ramp_factor);
+            output << ',';
             writeNumber(output, joint.sent_feedforward_torque_nm);
             output << ',';
             writeNumber(output, joint.estimated_control_torque_nm);
@@ -180,6 +199,10 @@ void MotionLogger::saveCsv(const std::string& path) const
             output << ',' << (joint.feedback_valid ? 1 : 0)
                    << ',' << (joint.operation_feedback_valid ? 1 : 0)
                    << ',' << (joint.bus_voltage_valid ? 1 : 0)
+                   << ',' << (joint.gravity_enabled ? 1 : 0)
+                   << ',' << (joint.gravity_dry_run ? 1 : 0)
+                   << ',' << (joint.gravity_input_valid ? 1 : 0)
+                   << ',' << (joint.gravity_torque_clamped ? 1 : 0)
                    << ',' << static_cast<unsigned int>(
                           joint.motor_fault_flags)
                    << ',' << static_cast<unsigned int>(

@@ -54,14 +54,16 @@ cmake --build build --target coordinated_motion_demo -j"$(nproc)"
 `logs/`는 Git 추적에서 제외된다.
 
 `Space`을 누르면 현재 자세를 기준으로 계획을 생성하고 한 번 실행한다.
-활성화 직후에는 시작 자세를 유지하며 중력보상 토크를 1초 동안 서서히
-인가한 뒤 Pose A 이동을 시작한다.
+활성화 직후에는 시작 자세를 유지하며 중력보상 토크를
+`gravity_compensation.ramp_duration_ms` 동안 서서히 인가한 뒤 Pose A
+이동을 시작한다.
 동작을 마치면 시작 자세를 계속 유지한다. 이 상태에서 `Space`을 누르면
 전체 모터를 비활성화하고 종료한다.
 
-실행 중 `G`를 누르면 중력보상을 켜거나 끌 수 있다. 전환할 때도 토크는
-1초 동안 ramp되어 갑작스러운 토크 변화를 피한다. 터미널 상태의 `G:ON`과
-괄호 안 백분율로 목표 모드와 현재 적용 비율을 확인할 수 있다.
+실행 중 `G`를 누르면 중력보상을 켜거나 끌 수 있다. 켜질 때는 설정된
+시간 동안 ramp되고, 끌 때는 새 중력보상 명령을 즉시 0으로 만든다.
+터미널 상태의 `G:ON/OFF`, `DRY/LIVE`, 괄호 안 백분율로 목표 모드와
+현재 적용 비율을 확인할 수 있다.
 
 실행 중 `Space`, `Q`, 또는 `Ctrl+C`를 누르면 긴급 중단한다. 모터 fault,
 hard-limit 위반, CAN 송신 오류는 기존 `MotorDriver`의 latched fault를 통해
@@ -77,13 +79,17 @@ CSV에는 다음 값이 포함된다.
 - 제어 주기 `dt`, 예약 시각 대비 lateness, deadline miss
 - 관절별 command/encoder position과 trajectory/전송/encoder velocity
 - position error와 P·D·feedforward·총 제어토크 추정값
+- Pinocchio의 raw `g(q)`, scale/ramp 적용값, joint-limit 적용값
+- gravity enabled/dry-run/input-valid/clamped 상태
 - Type 2 측정 토크, 모터 온도, fault flags와 mode state
 - position/Type 2 feedback timestamp 기준 age와 validity
 
 `trajectory_velocity_rad_s`와 `sent_velocity_rad_s`에는 실제 MIT 패킷에
-사용한 목표 속도가 기록된다. `sent_feedforward_torque_nm`에는 Type 2의
-실제 관절각으로 매 제어주기 계산해 MIT 패킷에 넣은 중력보상 토크가
-기록된다.
+사용한 목표 속도가 기록된다. `raw_gravity_torque_nm`에는 Type 2의 실제
+관절각으로 계산한 Pinocchio `g(q)`가, `sent_feedforward_torque_nm`에는
+dry-run과 안전 제한을 모두 거쳐 HAL에 전달된 관절 좌표계 토크가 기록된다.
+HAL은 이를 gear ratio와 `position_sign`에 따라 모터 좌표계 MIT
+feedforward torque로 변환한다.
 
 활성화 전에는 Type 17 `mechPos`를 사용해 초기 위치와 hard limit를
 검사한다. 활성화 후에는 각 Type 1 명령에 대한 Type 2 응답을 주 피드백으로
@@ -102,11 +108,23 @@ runtime:
   control_period_ms: 20
   feedback_timeout_ms: 250
   position_request_period_ms: 100
-  gravity_compensation_enabled: true
+
+gravity_compensation:
+  urdf_path: "../RAVEN_hardware/urdf/urdf/RAVEN.urdf"
+  enabled: false
+  dry_run: true
+  scale: 0.0
+  ramp_duration_ms: 3000
+  max_joint_torque_nm:
+    shoulder_Joint: 0.0
+    upperArm_Joint: 0.0
+    foreArm_Joint: 0.0
 ```
 
-`gravity_compensation_enabled`를 생략하면 기본값은 `true`다. 시작부터
-보상을 끄고 비교하려면 `false`로 설정한다.
+기본값은 모터로 중력보상 토크가 나가지 않는 commissioning 상태다.
+먼저 `enabled: true`, `dry_run: true`로 raw/limited 토크와 부호를 로그에서
+검증한다. 이후 joint별 제한과 작은 `scale`을 설정하고 마지막에만
+`dry_run: false`로 전환한다. `scale`은 `0.0..1.0` 범위여야 한다.
 
 로그 요약은 Python 표준 라이브러리만으로 실행할 수 있다.
 

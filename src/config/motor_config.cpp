@@ -21,6 +21,13 @@
 namespace raven_control::config {
 namespace {
 
+constexpr std::array<const char*, GRAVITY_COMPENSATION_JOINT_COUNT>
+    RAVEN_JOINT_NAMES{{
+        "shoulder_Joint",
+        "upperArm_Joint",
+        "foreArm_Joint",
+    }};
+
 void requireFinite(
     double value,
     const std::string& field_name,
@@ -146,6 +153,27 @@ void MotorRuntimeConfig::validate() const
     }
     if (joints.empty())
         throw std::invalid_argument("Motor config contains no joints");
+    if (gravity_compensation.urdf_path.empty()) {
+        throw std::invalid_argument(
+            "gravity_compensation.urdf_path must not be empty");
+    }
+    if (!std::isfinite(gravity_compensation.scale) ||
+        gravity_compensation.scale < 0.0 ||
+        gravity_compensation.scale > 1.0) {
+        throw std::invalid_argument(
+            "gravity_compensation.scale must be in range 0..1");
+    }
+    if (gravity_compensation.ramp_duration.count() <= 0) {
+        throw std::invalid_argument(
+            "gravity_compensation.ramp_duration_ms must be positive");
+    }
+    for (double limit : gravity_compensation.max_joint_torque_nm) {
+        if (!std::isfinite(limit) || limit < 0.0) {
+            throw std::invalid_argument(
+                "gravity compensation torque limits must be finite and "
+                "nonnegative");
+        }
+    }
 
     std::unordered_set<std::string> joint_names;
     std::unordered_set<std::uint8_t> motor_ids;
@@ -159,6 +187,24 @@ void MotorRuntimeConfig::validate() const
             throw std::invalid_argument(
                 "Duplicate motor ID in motor config: " +
                 std::to_string(joint.motor_id));
+        }
+    }
+
+    for (std::size_t index = 0;
+         index < RAVEN_JOINT_NAMES.size();
+         ++index) {
+        const auto* joint = findJoint(RAVEN_JOINT_NAMES[index]);
+        if (joint == nullptr)
+            continue;
+        const double maximum_joint_torque =
+            hal::RS02_OPERATION_MAX_TORQUE_NM *
+            joint->joint_to_motor_ratio;
+        if (gravity_compensation.max_joint_torque_nm[index] >
+            maximum_joint_torque) {
+            throw std::invalid_argument(
+                "Gravity torque limit for '" +
+                std::string(RAVEN_JOINT_NAMES[index]) +
+                "' exceeds the calibrated RS02 range");
         }
     }
 }
@@ -200,10 +246,11 @@ MotorRuntimeConfig loadMotorRuntimeConfig(
         requiredMilliseconds(runtime, "feedback_timeout_ms");
     config.position_request_period =
         requiredMilliseconds(runtime, "position_request_period_ms");
-    if (const YAML::Node enabled =
-            runtime["gravity_compensation_enabled"]) {
+    // Backward-compatible read of the legacy switch. New configuration
+    // belongs to the top-level gravity_compensation map below.
+    if (const YAML::Node enabled = runtime["gravity_compensation_enabled"]) {
         try {
-            config.gravity_compensation_enabled = enabled.as<bool>();
+            config.gravity_compensation.enabled = enabled.as<bool>();
         } catch (const YAML::Exception& error) {
             throw std::runtime_error(
                 "Runtime config has invalid "
@@ -277,6 +324,40 @@ MotorRuntimeConfig loadMotorRuntimeConfig(
         config.joints.push_back(joint);
     }
 
+    if (const YAML::Node gravity = root["gravity_compensation"]) {
+        if (!gravity.IsMap()) {
+            throw std::runtime_error(
+                "gravity_compensation must be a map");
+        }
+        const std::string context = "Gravity compensation config";
+        config.gravity_compensation.urdf_path =
+            requiredValue<std::string>(gravity, "urdf_path", context);
+        config.gravity_compensation.enabled =
+            requiredValue<bool>(gravity, "enabled", context);
+        config.gravity_compensation.dry_run =
+            requiredValue<bool>(gravity, "dry_run", context);
+        config.gravity_compensation.scale =
+            requiredValue<double>(gravity, "scale", context);
+        config.gravity_compensation.ramp_duration =
+            std::chrono::milliseconds(requiredValue<int>(
+                gravity, "ramp_duration_ms", context));
+
+        const YAML::Node limits = gravity["max_joint_torque_nm"];
+        if (!limits || !limits.IsMap()) {
+            throw std::runtime_error(
+                context + " requires a max_joint_torque_nm map");
+        }
+        for (std::size_t index = 0;
+             index < RAVEN_JOINT_NAMES.size();
+             ++index) {
+            config.gravity_compensation.max_joint_torque_nm[index] =
+                requiredValue<double>(
+                    limits,
+                    RAVEN_JOINT_NAMES[index],
+                    context + " torque limits");
+        }
+    }
+
     config.validate();
     return config;
 #else
@@ -304,9 +385,30 @@ void saveMotorRuntimeConfig(
     output << YAML::Key << "position_request_period_ms"
            << YAML::Value
            << config.position_request_period.count();
-    output << YAML::Key << "gravity_compensation_enabled"
-           << YAML::Value
-           << config.gravity_compensation_enabled;
+    output << YAML::EndMap;
+
+    output << YAML::Key << "gravity_compensation" << YAML::Value
+           << YAML::BeginMap;
+    output << YAML::Key << "urdf_path" << YAML::Value
+           << config.gravity_compensation.urdf_path;
+    output << YAML::Key << "enabled" << YAML::Value
+           << config.gravity_compensation.enabled;
+    output << YAML::Key << "dry_run" << YAML::Value
+           << config.gravity_compensation.dry_run;
+    output << YAML::Key << "scale" << YAML::Value
+           << config.gravity_compensation.scale;
+    output << YAML::Key << "ramp_duration_ms" << YAML::Value
+           << config.gravity_compensation.ramp_duration.count();
+    output << YAML::Key << "max_joint_torque_nm" << YAML::Value
+           << YAML::BeginMap;
+    for (std::size_t index = 0;
+         index < RAVEN_JOINT_NAMES.size();
+         ++index) {
+        output << YAML::Key << RAVEN_JOINT_NAMES[index]
+               << YAML::Value
+               << config.gravity_compensation.max_joint_torque_nm[index];
+    }
+    output << YAML::EndMap;
     output << YAML::EndMap;
 
     output << YAML::Key << "joints" << YAML::Value

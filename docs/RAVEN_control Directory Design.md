@@ -27,7 +27,13 @@ RAVEN_control/
 │   └── motor_config.yaml           # 로컬 ID/영점/gain, Git 추적 제외
 ├── include/raven_control/
 │   ├── config/
-│   │   └── motor_config.hpp
+│   │   ├── motor_config.hpp
+│   │   └── gravity_compensation_config.hpp
+│   ├── control/
+│   │   └── gravity_feedforward_controller.hpp
+│   ├── dynamics/
+│   │   ├── gravity_model.hpp
+│   │   └── pinocchio_gravity_model.hpp
 │   ├── hal/
 │   │   ├── can_interface.hpp
 │   │   └── motor_driver.hpp
@@ -36,6 +42,10 @@ RAVEN_control/
 ├── src/
 │   ├── config/
 │   │   └── motor_config.cpp
+│   ├── control/
+│   │   └── gravity_feedforward_controller.cpp
+│   ├── dynamics/
+│   │   └── pinocchio_gravity_model.cpp
 │   ├── hal/
 │   │   ├── can_interface.cpp
 │   │   └── motor_driver.cpp
@@ -67,6 +77,8 @@ RAVEN_control/
 | `config/joint_limits.yaml` | 로컬 실측 제한값. `confirmed: false`이면 enable 금지 |
 | `config/motor_config.yaml` | 로컬 CAN ID, 좌표 보정, Kp/Kd, setpoint slew 및 주기 |
 | `config/motor_config` C++ 모듈 | YAML 로딩과 범위·중복·주기 검증 |
+| `control/gravity_feedforward_controller` | Pinocchio `g(q)`에 scale/ramp/joint torque limit/dry-run을 적용 |
+| `dynamics/pinocchio_gravity_model` | URDF를 한 번 파싱하고 측정 관절각에서 joint-coordinate `g(q)` 계산 |
 | `safety/joint_limiter` | 하드 리밋 판정, 목표값 clamp, soft-wall 토크 계산만 담당하는 순수 로직 |
 | `hal/can_interface` | Linux SocketCAN의 열기·송신·수신만 담당 |
 | `hal/motor_driver` | RS02 프레임 변환, 피드백 관리, enable/stop, 송신 직전 `JointLimiter` 적용 |
