@@ -54,7 +54,7 @@ constexpr std::array<double, 3> POSE_A_OFFSET_DEG{
 };
 constexpr std::array<double, 3> POSE_B_OFFSET_DEG{
     -10.0,
-    8.0,
+    0.5,
     -12.0,
 };
 constexpr std::array<double, 3> HOME_OFFSET_DEG{
