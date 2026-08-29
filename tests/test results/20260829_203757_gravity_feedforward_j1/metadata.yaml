@@ -1,0 +1,18 @@
+schema_version: 1
+application: gravity_feedforward_validation
+created_at: "20260829_203757"
+git_commit: "18106743d0e58be3fb383859d0364fabad1274c0"
+can_interface: "can0"
+joint_limits_source: "config/joint_limits.yaml"
+motor_config_source: "config/motor_config.yaml"
+test_joint: "upperArm_Joint"
+test_joint_kp: 0
+test_joint_kd: 0
+gate_duration_ms: 30000
+measurement_duration_ms: 5000
+gravity_scale: 0.1
+gravity_ramp_duration_ms: 5000
+captured_pose_rad:
+  shoulder_Joint: 0.0840225815773
+  upperArm_Joint: -2.07780218124
+  foreArm_Joint: 1.11792552471
