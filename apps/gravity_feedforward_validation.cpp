@@ -915,7 +915,7 @@ int main(int argc, char* argv[])
                "after release to mark a 5 s measurement.\n";
 
         while (!stop_requested) {
-            const auto now = Clock::now();
+            const auto cycle_started_at = Clock::now();
             if (keyAvailable()) {
                 const auto key = readKey();
                 if (key && *key == ' ') {
@@ -932,7 +932,7 @@ int main(int argc, char* argv[])
                     break;
                 }
                 if (key && (*key == 'm' || *key == 'M')) {
-                    if (!session.requestMeasurement(now)) {
+                    if (!session.requestMeasurement(cycle_started_at)) {
                         std::cout
                             << "\nMeasurement mark ignored: wait for "
                                "manual_ready\n";
@@ -946,24 +946,68 @@ int main(int argc, char* argv[])
             }
 
             (void)driver.poll();
+            // poll() timestamps newly received Type 2 frames. Observe the
+            // clock afterwards so those frames are not rejected as being
+            // newer than a timestamp captured at the start of the cycle.
+            const auto feedback_observed_at = Clock::now();
             if (driver.faultLatched())
                 throw std::runtime_error(driver.faultReason());
-            if (now >= next_vbus) {
+            if (cycle_started_at >= next_vbus) {
                 if (!driver.requestBusVoltages())
                     throw std::runtime_error("Failed to request VBUS");
-                next_vbus = now + motor_config.position_request_period;
+                next_vbus =
+                    cycle_started_at + motor_config.position_request_period;
             }
             checkLiveSafety(driver);
 
             JointVector positions{};
             bool operation_feedback_fresh = true;
+            std::string operation_feedback_issue;
             for (std::size_t index = 0; index < JOINT_NAMES.size(); ++index) {
                 const auto feedback = driver.feedback(JOINT_NAMES[index]);
-                if (!feedback || !feedback->valid ||
-                    !feedback->operation_feedback_valid ||
-                    now < feedback->operation_received_at ||
-                    now - feedback->operation_received_at >
-                        motor_config.feedback_timeout) {
+                if (!feedback) {
+                    operation_feedback_issue =
+                        "no feedback record for '" +
+                        std::string(JOINT_NAMES[index]) + "'";
+                    operation_feedback_fresh = false;
+                    break;
+                }
+                if (!feedback->valid) {
+                    operation_feedback_issue =
+                        "feedback is invalid for '" +
+                        std::string(JOINT_NAMES[index]) + "'";
+                    operation_feedback_fresh = false;
+                    break;
+                }
+                if (!feedback->operation_feedback_valid) {
+                    operation_feedback_issue =
+                        "Type 2 has not been received for '" +
+                        std::string(JOINT_NAMES[index]) + "'";
+                    operation_feedback_fresh = false;
+                    break;
+                }
+                if (!raven_control::control::isFreshFeedbackTimestamp(
+                        feedback->operation_received_at,
+                        feedback_observed_at,
+                        motor_config.feedback_timeout)) {
+                    std::ostringstream issue;
+                    issue << "Type 2 timestamp is invalid for '"
+                          << JOINT_NAMES[index] << "'";
+                    if (feedback_observed_at <
+                        feedback->operation_received_at) {
+                        issue << " (feedback was timestamped after the "
+                                 "observation time)";
+                    } else {
+                        issue << " (age="
+                              << std::chrono::duration<double, std::milli>(
+                                     feedback_observed_at -
+                                     feedback->operation_received_at)
+                                     .count()
+                              << " ms, timeout="
+                              << motor_config.feedback_timeout.count()
+                              << " ms)";
+                    }
+                    operation_feedback_issue = issue.str();
                     operation_feedback_fresh = false;
                     break;
                 }
@@ -973,15 +1017,19 @@ int main(int argc, char* argv[])
             const auto gravity_result = gravity.compute(
                 positions,
                 operation_feedback_fresh,
-                now);
+                feedback_observed_at);
             if (!gravity_result.input_valid &&
-                now >= operation_feedback_deadline) {
+                feedback_observed_at >= operation_feedback_deadline) {
                 throw std::runtime_error(
-                    "Fresh Type 2 feedback did not become available");
+                    "Fresh Type 2 feedback did not become available: " +
+                    (operation_feedback_issue.empty()
+                         ? std::string("unknown feedback state")
+                         : operation_feedback_issue));
             }
             if (gravity_result.input_valid) {
                 operation_feedback_deadline =
-                    now + motor_config.feedback_timeout * 2;
+                    feedback_observed_at +
+                    motor_config.feedback_timeout * 2;
             }
             for (std::size_t index = 0; index < JOINT_NAMES.size(); ++index) {
                 if (gravity_result.torque_clamped[index]) {
@@ -1018,7 +1066,7 @@ int main(int argc, char* argv[])
             }
 
             session.update(
-                now,
+                feedback_observed_at,
                 gravity_result.input_valid &&
                     gravity_result.ramp_factor >= 1.0 - 1e-12);
             if (session.phase() != previous_phase) {
@@ -1037,7 +1085,7 @@ int main(int argc, char* argv[])
                 cycle_index++,
                 session.phaseLabel(),
                 next_cycle,
-                now,
+                cycle_started_at,
                 motor_config,
                 captured_pose,
                 kp,
@@ -1045,9 +1093,10 @@ int main(int argc, char* argv[])
                 gravity_result,
                 audits,
                 driver);
-            if (now >= next_status) {
+            if (cycle_started_at >= next_status) {
                 printStatus(session, gravity_result, driver);
-                next_status = now + std::chrono::milliseconds(200);
+                next_status =
+                    cycle_started_at + std::chrono::milliseconds(200);
             }
 
             next_cycle += motor_config.control_period;

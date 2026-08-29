@@ -85,12 +85,44 @@ void testStopStates()
           "abort state must not be overwritten by normal completion");
 }
 
+void testFeedbackFreshnessUsesPostPollObservationTime()
+{
+    const auto received_at = Clock::now();
+    const auto timeout = std::chrono::milliseconds(250);
+
+    check(
+        raven_control::control::isFreshFeedbackTimestamp(
+            received_at,
+            received_at + std::chrono::milliseconds(1),
+            timeout),
+        "fresh feedback observed after reception must be accepted");
+    check(
+        raven_control::control::isFreshFeedbackTimestamp(
+            received_at,
+            received_at + timeout,
+            timeout),
+        "feedback exactly at the timeout must remain valid");
+    check(
+        !raven_control::control::isFreshFeedbackTimestamp(
+            received_at,
+            received_at + timeout + std::chrono::milliseconds(1),
+            timeout),
+        "feedback older than the timeout must be rejected");
+    check(
+        !raven_control::control::isFreshFeedbackTimestamp(
+            received_at,
+            received_at - std::chrono::milliseconds(1),
+            timeout),
+        "a pre-poll observation time must not validate later feedback");
+}
+
 }  // namespace
 
 int main()
 {
     testNoAutomaticMotionAndTimedPhases();
     testStopStates();
+    testFeedbackFreshnessUsesPostPollObservationTime();
     std::cout << "gravity_validation_session_test passed\n";
     return 0;
 }

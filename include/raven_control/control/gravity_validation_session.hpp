@@ -19,6 +19,11 @@ enum class GravityValidationPhase {
 [[nodiscard]] const char* toString(
     GravityValidationPhase phase) noexcept;
 
+[[nodiscard]] bool isFreshFeedbackTimestamp(
+    std::chrono::steady_clock::time_point received_at,
+    std::chrono::steady_clock::time_point observed_at,
+    std::chrono::milliseconds timeout) noexcept;
+
 struct GravityValidationSessionConfig {
     std::chrono::milliseconds gate_duration{30000};
     std::chrono::milliseconds measurement_duration{5000};

@@ -26,6 +26,17 @@ const char* toString(GravityValidationPhase phase) noexcept
     return "unknown";
 }
 
+bool isFreshFeedbackTimestamp(
+    std::chrono::steady_clock::time_point received_at,
+    std::chrono::steady_clock::time_point observed_at,
+    std::chrono::milliseconds timeout) noexcept
+{
+    return timeout.count() > 0 &&
+           received_at != std::chrono::steady_clock::time_point{} &&
+           observed_at >= received_at &&
+           observed_at - received_at <= timeout;
+}
+
 void GravityValidationSessionConfig::validate() const
 {
     if (gate_duration.count() <= 0)
