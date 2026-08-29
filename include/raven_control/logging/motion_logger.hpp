@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,11 @@ struct JointMotionSample {
     double gravity_scale = 0.0;
     double gravity_ramp_factor = 0.0;
     double sent_feedforward_torque_nm = 0.0;
+    double motor_feedforward_torque_nm =
+        std::numeric_limits<double>::quiet_NaN();
+    std::uint16_t encoded_feedforward_torque = 0;
+    double decoded_joint_feedforward_torque_nm =
+        std::numeric_limits<double>::quiet_NaN();
     double estimated_control_torque_nm = 0.0;
     double measured_torque_nm = 0.0;
     double motor_temperature_celsius = 0.0;
@@ -44,6 +50,7 @@ struct JointMotionSample {
     bool gravity_dry_run = true;
     bool gravity_input_valid = false;
     bool gravity_torque_clamped = false;
+    bool feedforward_audit_valid = false;
 };
 
 struct MotionSample {

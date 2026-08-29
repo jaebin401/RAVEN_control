@@ -52,6 +52,9 @@ int main()
     joint.gravity_scale = 0.1;
     joint.gravity_ramp_factor = 1.0;
     joint.sent_feedforward_torque_nm = 0.0;
+    joint.motor_feedforward_torque_nm = -0.6;
+    joint.encoded_feedforward_torque = 31610;
+    joint.decoded_joint_feedforward_torque_nm = 1.2;
     joint.estimated_control_torque_nm = 1.75;
     joint.measured_torque_nm = 1.7;
     joint.motor_temperature_celsius = 32.5;
@@ -66,6 +69,7 @@ int main()
     joint.gravity_dry_run = true;
     joint.gravity_input_valid = true;
     joint.gravity_torque_clamped = true;
+    joint.feedforward_audit_valid = true;
     joint.motor_fault_flags = 0;
     joint.motor_mode_state = 2;
     joint.kp = 20.0;
@@ -113,6 +117,14 @@ int main()
         csv.find("shoulder_Joint.gravity_torque_clamped") !=
             std::string::npos,
         "CSV must include gravity safety state columns");
+    check(
+        csv.find("shoulder_Joint.encoded_feedforward_torque") !=
+            std::string::npos,
+        "CSV must include the exact MIT torque field audit column");
+    check(
+        csv.find("shoulder_Joint.feedforward_audit_valid") !=
+            std::string::npos,
+        "CSV must identify whether wire audit columns are populated");
     check(
         csv.find("shoulder_Joint.bus_voltage_v") !=
             std::string::npos,

@@ -97,6 +97,9 @@ void MotionLogger::saveCsv(const std::string& path) const
             << ',' << prefix << ".gravity_scale"
             << ',' << prefix << ".gravity_ramp_factor"
             << ',' << prefix << ".sent_feedforward_torque_nm"
+            << ',' << prefix << ".motor_feedforward_torque_nm"
+            << ',' << prefix << ".encoded_feedforward_torque"
+            << ',' << prefix << ".decoded_joint_feedforward_torque_nm"
             << ',' << prefix << ".estimated_control_torque_nm"
             << ',' << prefix << ".measured_torque_nm"
             << ',' << prefix << ".motor_temperature_celsius"
@@ -111,6 +114,7 @@ void MotionLogger::saveCsv(const std::string& path) const
             << ',' << prefix << ".gravity_dry_run"
             << ',' << prefix << ".gravity_input_valid"
             << ',' << prefix << ".gravity_torque_clamped"
+            << ',' << prefix << ".feedforward_audit_valid"
             << ',' << prefix << ".motor_fault_flags"
             << ',' << prefix << ".motor_mode_state"
             << ',' << prefix << ".kp"
@@ -183,6 +187,12 @@ void MotionLogger::saveCsv(const std::string& path) const
             output << ',';
             writeNumber(output, joint.sent_feedforward_torque_nm);
             output << ',';
+            writeNumber(output, joint.motor_feedforward_torque_nm);
+            output << ',' << joint.encoded_feedforward_torque << ',';
+            writeNumber(
+                output,
+                joint.decoded_joint_feedforward_torque_nm);
+            output << ',';
             writeNumber(output, joint.estimated_control_torque_nm);
             output << ',';
             writeNumber(output, joint.measured_torque_nm);
@@ -203,6 +213,7 @@ void MotionLogger::saveCsv(const std::string& path) const
                    << ',' << (joint.gravity_dry_run ? 1 : 0)
                    << ',' << (joint.gravity_input_valid ? 1 : 0)
                    << ',' << (joint.gravity_torque_clamped ? 1 : 0)
+                   << ',' << (joint.feedforward_audit_valid ? 1 : 0)
                    << ',' << static_cast<unsigned int>(
                           joint.motor_fault_flags)
                    << ',' << static_cast<unsigned int>(

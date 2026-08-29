@@ -1,4 +1,5 @@
 #include "raven_control/hal/motor_driver.hpp"
+#include "raven_control/hal/mit_torque_codec.hpp"
 
 #include <algorithm>
 #include <array>
@@ -127,23 +128,6 @@ double motorToJointVelocity(
 {
     return static_cast<double>(motor.position_sign) *
            motor_velocity_rad_s / motor.joint_to_motor_ratio;
-}
-
-double jointToMotorTorque(
-    const JointMotorConfig& motor,
-    double joint_torque_nm)
-{
-    // Preserve virtual work for q_motor = sign * ratio * q_joint.
-    return static_cast<double>(motor.position_sign) *
-           joint_torque_nm / motor.joint_to_motor_ratio;
-}
-
-double motorToJointTorque(
-    const JointMotorConfig& motor,
-    double motor_torque_nm)
-{
-    return static_cast<double>(motor.position_sign) *
-           motor.joint_to_motor_ratio * motor_torque_nm;
 }
 
 std::string hardLimitViolationReason(
@@ -481,8 +465,9 @@ MotorCommandResult MotorDriver::sendMitCommand(
     const double motor_velocity = jointToMotorVelocity(
         channel.motor,
         safe_joint_velocity);
-    const double motor_torque = jointToMotorTorque(
-        channel.motor,
+    const double motor_torque = hal::jointToMotorTorque(
+        channel.motor.position_sign,
+        channel.motor.joint_to_motor_ratio,
         feedforward_torque_nm);
     if (std::abs(motor_velocity) >
         RS02_OPERATION_MAX_VELOCITY_RAD_S) {
@@ -642,7 +627,7 @@ bool MotorDriver::sendMitFrame(
     CanFrame frame;
     frame.id = buildExtendedId(
         COMM_OPERATION_CONTROL,
-        encodeSymmetric(torque_nm, RS02_OPERATION_MAX_TORQUE_NM),
+        encodeRs02Torque(torque_nm),
         motor_id);
     frame.dlc = 8;
 
@@ -776,8 +761,9 @@ void MotorDriver::processFrameUnlocked(const CanFrame& frame)
         channel.feedback.velocity_rad_s = motorToJointVelocity(
             channel.motor,
             decoded->motor_velocity_rad_s);
-        channel.feedback.torque_nm = motorToJointTorque(
-            channel.motor,
+        channel.feedback.torque_nm = hal::motorToJointTorque(
+            channel.motor.position_sign,
+            channel.motor.joint_to_motor_ratio,
             decoded->motor_torque_nm);
         channel.feedback.temperature_celsius =
             decoded->temperature_celsius;

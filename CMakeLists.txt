@@ -79,6 +79,7 @@ add_library(
     raven_hal
     STATIC
     src/config/motor_config.cpp
+    src/hal/mit_torque_codec.cpp
     src/hal/motor_driver.cpp
     src/hal/rs02_operation_feedback.cpp
 )
@@ -134,6 +135,7 @@ add_library(
     raven_gravity_control
     STATIC
     src/control/gravity_feedforward_controller.cpp
+    src/control/gravity_validation_session.cpp
 )
 target_include_directories(
     raven_gravity_control
@@ -232,6 +234,14 @@ if(BUILD_TESTING)
     )
 
     add_executable(
+        mit_torque_codec_test
+        tests/mit_torque_codec_test.cpp
+    )
+    target_link_libraries(mit_torque_codec_test PRIVATE raven_hal)
+    raven_enable_warnings(mit_torque_codec_test)
+    add_test(NAME mit_torque_codec_test COMMAND mit_torque_codec_test)
+
+    add_executable(
         motor_config_test
         tests/motor_config_test.cpp
     )
@@ -282,6 +292,20 @@ if(BUILD_TESTING)
     add_test(
         NAME gravity_feedforward_controller_test
         COMMAND gravity_feedforward_controller_test
+    )
+
+    add_executable(
+        gravity_validation_session_test
+        tests/gravity_validation_session_test.cpp
+    )
+    target_link_libraries(
+        gravity_validation_session_test
+        PRIVATE raven_gravity_control
+    )
+    raven_enable_warnings(gravity_validation_session_test)
+    add_test(
+        NAME gravity_validation_session_test
+        COMMAND gravity_validation_session_test
     )
 
     if(RAVEN_ENABLE_PINOCCHIO_DYNAMICS)
@@ -418,6 +442,20 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
                 raven_pinocchio_dynamics
         )
         raven_enable_warnings(teach_and_play_demo)
+
+        add_executable(
+            gravity_feedforward_validation
+            apps/gravity_feedforward_validation.cpp
+        )
+        target_link_libraries(
+            gravity_feedforward_validation
+            PRIVATE
+                raven_hal
+                raven_logging
+                raven_gravity_control
+                raven_pinocchio_dynamics
+        )
+        raven_enable_warnings(gravity_feedforward_validation)
     else()
         message(WARNING
             "Pinocchio dynamics are disabled. Gravity-integrated motion "
