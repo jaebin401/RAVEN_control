@@ -29,10 +29,28 @@ void testHomePoseAgainstHandCalculation()
 
     check(std::abs(torque[0]) < TOLERANCE_NM,
           "vertical shoulder axis must need zero gravity torque");
-    check(std::abs(torque[1] - 1.494581303551) < TOLERANCE_NM,
+    check(std::abs(torque[1] + 1.494581303551) < TOLERANCE_NM,
           "home upper-arm torque must match the hand calculation");
     check(std::abs(torque[2] - 0.091127733206) < TOLERANCE_NM,
           "home forearm torque must match the hand calculation");
+}
+
+void testMeasuredPoseUsesRealRobotTorqueDirections()
+{
+    const raven_control::dynamics::GravityCompensator compensator(
+        raven_control::dynamics::makeRavenUrdfGravityModel());
+    const auto torque = compensator.compute({
+        -0.06194,
+        -0.48532,
+        0.85962,
+    });
+
+    check(std::abs(torque[0]) < TOLERANCE_NM,
+          "vertical shoulder axis must need zero gravity torque");
+    check(torque[1] < -1.3 && torque[1] > -1.4,
+          "measured-pose upper-arm compensation must be negative");
+    check(torque[2] > 0.05 && torque[2] < 0.07,
+          "measured-pose forearm compensation must be positive");
 }
 
 void testShoulderYawDoesNotChangeGravityTorque()
@@ -99,6 +117,7 @@ void testInvalidModelAndStateAreRejected()
 int main()
 {
     testHomePoseAgainstHandCalculation();
+    testMeasuredPoseUsesRealRobotTorqueDirections();
     testShoulderYawDoesNotChangeGravityTorque();
     testForearmAxisDirectionIsRespected();
     testInvalidModelAndStateAreRejected();

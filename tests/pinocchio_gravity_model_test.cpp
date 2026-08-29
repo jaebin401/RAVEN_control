@@ -29,7 +29,7 @@ void compareModelsAtPoses(const std::string& urdf_path)
     const raven_control::dynamics::GravityCompensator reference_model(
         raven_control::dynamics::makeRavenUrdfGravityModel());
 
-    const std::array<raven_control::dynamics::JointVector, 8> poses{{
+    const std::array<raven_control::dynamics::JointVector, 9> poses{{
         {0.0, 0.0, 0.0},
         {0.5, 0.0, 0.0},
         {-1.2, 0.4, -0.7},
@@ -38,6 +38,7 @@ void compareModelsAtPoses(const std::string& urdf_path)
         {0.0, -0.4, 1.1},
         {2.1, 1.2, -1.0},
         {-2.3, -0.8, 0.6},
+        {-0.06194, -0.48532, 0.85962},
     }};
 
     for (std::size_t pose_index = 0;
