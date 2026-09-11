@@ -1,4 +1,6 @@
 #include "raven_control/config/motor_config.hpp"
+#include "raven_control/control/mit_command_pipeline.hpp"
+#include "raven_control/dynamics/pinocchio_gravity_model.hpp"
 #include "raven_control/hal/can_interface.hpp"
 #include "raven_control/hal/motor_driver.hpp"
 #include "raven_control/safety/joint_limiter.hpp"
@@ -413,6 +415,13 @@ int main(int argc, char* argv[])
             std::move(limiters),
             0xFD,
             motor_config.feedback_timeout);
+        raven_control::control::MitCommandPipeline command_pipeline(
+            driver,
+            std::make_unique<
+                raven_control::dynamics::PinocchioGravityModel>(
+                motor_config.gravity_compensation.urdf_path),
+            motor_config,
+            {"shoulder_Joint", "upperArm_Joint", "foreArm_Joint"});
 
         if (!driver.stopAll())
             throw std::runtime_error("Failed to send startup stop");
@@ -540,6 +549,8 @@ int main(int argc, char* argv[])
                                 "Enable rejected: fresh feedback "
                                 "is unavailable";
                         } else {
+                            command_pipeline.reset(
+                                std::chrono::steady_clock::now());
                             const auto result = driver.enableAll();
                             message =
                                 result ==
@@ -576,6 +587,8 @@ int main(int argc, char* argv[])
                 }
 
                 if (driver.isEnabled()) {
+                    raven_control::control::MitCommandPipeline::Commands
+                        commands{};
                     for (std::size_t index = 0;
                          index < JOINTS.size();
                          ++index) {
@@ -599,36 +612,23 @@ int main(int argc, char* argv[])
                             control_period_seconds;
                         states[index].setpoint_rad = next_setpoint;
 
-                        const auto result =
-                            driver.sendMitCommand(
-                                JOINTS[index].name,
-                                states[index].setpoint_rad,
-                                target_velocity_rad_s,
-                                states[index].kp,
-                                states[index].kd,
-                                0.0);
-                        if (result ==
-                            raven_control::hal::
-                                MotorCommandResult::TargetClamped) {
-                            message =
-                                "Target clamped by joint limit";
-                        } else if (
-                            result ==
-                            raven_control::hal::
-                                MotorCommandResult::FeedbackHold) {
-                            message =
-                                "TYPE 2 LOST: holding last position; "
-                                "press SPACE to disable";
-                        } else if (
-                            result !=
-                            raven_control::hal::
-                                MotorCommandResult::Sent) {
-                            throw std::runtime_error(
-                                "MIT command failed: " +
-                                std::string(
-                                    raven_control::hal::
-                                        toString(result)));
-                        }
+                        commands[index].target_position_rad =
+                            states[index].setpoint_rad;
+                        commands[index].target_velocity_rad_s =
+                            target_velocity_rad_s;
+                        commands[index].kp = states[index].kp;
+                        commands[index].kd = states[index].kd;
+                    }
+                    const auto result = command_pipeline.send(commands, now);
+                    if (result.target_clamped) {
+                        message = "Target clamped by joint limit";
+                    } else if (result.feedback_hold) {
+                        message =
+                            "TYPE 2 LOST: holding last position; "
+                            "press SPACE to disable";
+                    } else if (!result.all_sent) {
+                        throw std::runtime_error(
+                            "MIT pipeline failed: " + result.error);
                     }
                 }
 

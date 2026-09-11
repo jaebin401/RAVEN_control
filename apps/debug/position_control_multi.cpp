@@ -1,4 +1,6 @@
 #include "raven_control/config/motor_config.hpp"
+#include "raven_control/control/mit_command_pipeline.hpp"
+#include "raven_control/dynamics/pinocchio_gravity_model.hpp"
 #include "raven_control/hal/can_interface.hpp"
 #include "raven_control/hal/motor_driver.hpp"
 #include "raven_control/safety/joint_limiter.hpp"
@@ -317,6 +319,7 @@ void printStatus(
 
 void controlLoop(
     raven_control::hal::MotorDriver& driver,
+    raven_control::control::MitCommandPipeline& command_pipeline,
     const raven_control::config::MotorRuntimeConfig& motor_config,
     const JointBindings& bindings,
     std::array<ControlState, JOINTS.size()>& states,
@@ -345,6 +348,7 @@ void controlLoop(
             } while (next_position_request <= now);
         }
         (void)driver.poll();
+        const auto command_now = std::chrono::steady_clock::now();
 
         if (driver.faultLatched()) {
             running.store(false);
@@ -352,6 +356,7 @@ void controlLoop(
         }
 
         if (driver.isEnabled()) {
+            raven_control::control::MitCommandPipeline::Commands commands{};
             for (std::size_t index = 0;
                  index < JOINTS.size();
                  ++index) {
@@ -373,29 +378,20 @@ void controlLoop(
                 states[index].setpoint_velocity_rad_s.store(
                     command.velocity_rad_s);
 
-                const auto result = driver.sendMitCommand(
-                    JOINTS[index].name,
-                    command.position_rad,
-                    command.velocity_rad_s,
-                    states[index].kp.load(),
-                    states[index].kd.load(),
-                    0.0);
-                if (result == raven_control::hal::
-                                  MotorCommandResult::NotEnabled &&
-                    !driver.isEnabled()) {
-                    // The user stopped the motors between the enabled check
-                    // above and this command. This is a normal transition,
-                    // not a controller failure.
-                    break;
-                }
-                if (result !=
-                        raven_control::hal::MotorCommandResult::Sent &&
-                    result != raven_control::hal::
-                        MotorCommandResult::TargetClamped &&
-                    result != raven_control::hal::
-                        MotorCommandResult::FeedbackHold) {
+                commands[index].target_position_rad = command.position_rad;
+                commands[index].target_velocity_rad_s = command.velocity_rad_s;
+                commands[index].kp = states[index].kp.load();
+                commands[index].kd = states[index].kd.load();
+            }
+
+            if (driver.isEnabled()) {
+                const auto result =
+                    command_pipeline.send(commands, command_now);
+                if (!result.all_sent && !result.feedback_hold &&
+                    driver.isEnabled()) {
+                    std::cerr << "\nMIT pipeline failure: "
+                              << result.error << '\n';
                     running.store(false);
-                    break;
                 }
             }
         } else {
@@ -503,6 +499,13 @@ int main(int argc, char* argv[])
             std::move(limiters),
             0xFD,
             motor_config.feedback_timeout);
+        raven_control::control::MitCommandPipeline command_pipeline(
+            driver,
+            std::make_unique<
+                raven_control::dynamics::PinocchioGravityModel>(
+                motor_config.gravity_compensation.urdf_path),
+            motor_config,
+            {"shoulder_Joint", "upperArm_Joint", "foreArm_Joint"});
         std::array<ControlState, JOINTS.size()> states;
         initializeControlStates(bindings, states);
         std::atomic<bool> running{true};
@@ -544,6 +547,7 @@ int main(int argc, char* argv[])
         std::thread control_thread(
             controlLoop,
             std::ref(driver),
+            std::ref(command_pipeline),
             std::cref(motor_config),
             std::cref(bindings),
             std::ref(states),
@@ -577,6 +581,8 @@ int main(int argc, char* argv[])
                             << "Enable rejected: fresh Type 17 feedback "
                                "is unavailable\n";
                     } else {
+                        command_pipeline.reset(
+                            std::chrono::steady_clock::now());
                         const auto result = driver.enableAll();
                         if (result !=
                             raven_control::hal::

@@ -1,5 +1,5 @@
 #include "raven_control/config/motor_config.hpp"
-#include "raven_control/control/gravity_feedforward_controller.hpp"
+#include "raven_control/control/mit_command_pipeline.hpp"
 #include "raven_control/dynamics/pinocchio_gravity_model.hpp"
 #include "raven_control/hal/can_interface.hpp"
 #include "raven_control/hal/motor_driver.hpp"
@@ -129,20 +129,19 @@ struct QuinticSegment {
 
 struct GravityState {
     explicit GravityState(
+        raven_control::hal::MotorDriver& driver,
         const raven_control::config::MotorRuntimeConfig& config)
-        : controller(
+        : pipeline(
+              driver,
               std::make_unique<
                   raven_control::dynamics::PinocchioGravityModel>(
                   config.gravity_compensation.urdf_path),
-              config.gravity_compensation),
-          feedback_timeout(config.feedback_timeout)
+              config,
+              {"shoulder_Joint", "upperArm_Joint", "foreArm_Joint"})
     {
     }
 
-    raven_control::control::GravityFeedforwardController controller;
-    std::chrono::milliseconds feedback_timeout;
-    raven_control::control::GravityFeedforwardResult last_result{};
-    JointVector last_applied_torque_nm{};
+    raven_control::control::MitCommandPipeline pipeline;
 };
 
 struct CommandDispatch {
@@ -824,33 +823,7 @@ void printScript(const MotionScript& script)
 
 void resetGravityRamp(GravityState& gravity)
 {
-    gravity.controller.reset(std::chrono::steady_clock::now());
-    gravity.last_result = {};
-    gravity.last_applied_torque_nm = {};
-}
-
-raven_control::control::GravityFeedforwardResult gravityTorque(
-    raven_control::hal::MotorDriver& driver,
-    GravityState& gravity)
-{
-    const auto now = std::chrono::steady_clock::now();
-    raven_control::dynamics::JointVector positions{};
-    bool feedback_fresh = true;
-    for (std::size_t index = 0; index < JOINT_NAMES.size(); ++index) {
-        const auto feedback = driver.feedback(JOINT_NAMES[index]);
-        if (!feedback || !feedback->valid ||
-            !feedback->operation_feedback_valid ||
-            now < feedback->operation_received_at ||
-            now - feedback->operation_received_at >
-                gravity.feedback_timeout) {
-            feedback_fresh = false;
-            break;
-        }
-        positions[index] = feedback->position_rad;
-    }
-    gravity.last_result = gravity.controller.compute(
-        positions, feedback_fresh, now);
-    return gravity.last_result;
+    gravity.pipeline.reset(std::chrono::steady_clock::now());
 }
 
 MotionInput pollMotionInput(GravityState& gravity)
@@ -865,12 +838,12 @@ MotionInput pollMotionInput(GravityState& gravity)
     if (*key == 'q' || *key == 'Q')
         return MotionInput::Stop;
     if (*key == 'g' || *key == 'G') {
-        const bool enabled = !gravity.controller.enabled();
-        gravity.controller.setEnabled(
+        const bool enabled = !gravity.pipeline.gravityEnabled();
+        gravity.pipeline.setGravityEnabled(
             enabled, std::chrono::steady_clock::now());
         std::cout << "\nGravity compensation "
                   << (enabled ? "ON" : "OFF")
-                  << (gravity.controller.config().dry_run
+                  << (gravity.pipeline.gravityConfig().dry_run
                           ? " [DRY-RUN]" : "")
                   << " (configured ramp and limits apply)\n";
     } else if (*key == ' ') {
@@ -881,38 +854,26 @@ MotionInput pollMotionInput(GravityState& gravity)
 }
 
 CommandDispatch sendTargets(
-    raven_control::hal::MotorDriver& driver,
     const JointBindings& bindings,
     const JointVector& target,
     const JointVector& target_velocity,
     GravityState& gravity)
 {
     CommandDispatch dispatch;
-    dispatch.gravity = gravityTorque(driver, gravity);
-    const JointVector& requested_torque =
-        dispatch.gravity.commanded_torque_nm;
+    raven_control::control::MitCommandPipeline::Commands commands{};
     for (std::size_t index = 0; index < JOINT_NAMES.size(); ++index) {
-        const auto result = driver.sendMitCommand(
-            JOINT_NAMES[index],
-            target[index],
-            target_velocity[index],
-            bindings[index]->position_control.kp,
-            bindings[index]->position_control.kd,
-            requested_torque[index]);
-        if (result ==
-            raven_control::hal::MotorCommandResult::FeedbackHold) {
-            dispatch.feedback_hold = true;
-        } else if (result !=
-                   raven_control::hal::MotorCommandResult::Sent) {
-            throw std::runtime_error(
-                "MIT command failed on '" +
-                std::string(JOINT_NAMES[index]) + "': " +
-                raven_control::hal::toString(result));
-        }
+        commands[index].target_position_rad = target[index];
+        commands[index].target_velocity_rad_s = target_velocity[index];
+        commands[index].kp = bindings[index]->position_control.kp;
+        commands[index].kd = bindings[index]->position_control.kd;
     }
-    if (!dispatch.feedback_hold)
-        gravity.last_applied_torque_nm = requested_torque;
-    dispatch.feedforward_torque_nm = gravity.last_applied_torque_nm;
+    const auto result = gravity.pipeline.send(
+        commands, std::chrono::steady_clock::now());
+    if (!result.all_sent && !result.feedback_hold)
+        throw std::runtime_error("MIT pipeline failed: " + result.error);
+    dispatch.feedback_hold = result.feedback_hold;
+    dispatch.gravity = result.gravity;
+    dispatch.feedforward_torque_nm = result.final_feedforward_torque_nm;
     return dispatch;
 }
 
@@ -1021,11 +982,11 @@ void printStatus(
 {
     std::cout << "\r\033[K" << std::setw(18) << phase
               << " | G:"
-              << (gravity.controller.enabled() ? "ON " : "OFF")
-              << (gravity.controller.config().dry_run ? "DRY " : "LIVE ")
+              << (gravity.pipeline.gravityEnabled() ? "ON " : "OFF")
+              << (gravity.pipeline.gravityConfig().dry_run ? "DRY " : "LIVE ")
               << '(' << std::setw(3)
               << static_cast<int>(std::round(
-                     gravity.controller.rampFactor() * 100.0))
+                     gravity.pipeline.gravityRampFactor() * 100.0))
               << "%) | " << std::fixed << std::setprecision(1);
     for (std::size_t index = 0; index < JOINT_NAMES.size(); ++index) {
         const auto feedback = driver.feedback(JOINT_NAMES[index]);
@@ -1107,7 +1068,7 @@ RunResult driveSegment(
             throw std::runtime_error(driver.faultReason());
         const TrajectorySample target = segment.sample(elapsed);
         const CommandDispatch dispatch = sendTargets(
-            driver, bindings, target.position, target.velocity, gravity);
+            bindings, target.position, target.velocity, gravity);
         recordSample(
             logger,
             diagnostic,
@@ -1134,7 +1095,7 @@ RunResult driveSegment(
 
     const TrajectorySample goal = segment.sample(segment.duration_seconds);
     const CommandDispatch dispatch = sendTargets(
-        driver, bindings, goal.position, goal.velocity, gravity);
+        bindings, goal.position, goal.velocity, gravity);
     final_pose = goal.position;
     if (dispatch.feedback_hold)
         return RunResult::FeedbackHold;
@@ -1246,7 +1207,7 @@ void holdAfterFeedbackLossUntilSpace(
         if (driver.faultLatched())
             throw std::runtime_error(driver.faultReason());
         const CommandDispatch dispatch = sendTargets(
-            driver, bindings, last_target, zero_velocity, gravity);
+            bindings, last_target, zero_velocity, gravity);
         recordSample(
             logger,
             diagnostic,
@@ -1293,12 +1254,12 @@ void holdFinalPoseUntilSpace(
             if (key && *key == ' ')
                 return;
             if (key && (*key == 'g' || *key == 'G')) {
-                const bool enabled = !gravity.controller.enabled();
-                gravity.controller.setEnabled(
+                const bool enabled = !gravity.pipeline.gravityEnabled();
+                gravity.pipeline.setGravityEnabled(
                     enabled, std::chrono::steady_clock::now());
                 std::cout << "\nGravity compensation "
                           << (enabled ? "ON" : "OFF")
-                          << (gravity.controller.config().dry_run
+                          << (gravity.pipeline.gravityConfig().dry_run
                                   ? " [DRY-RUN]" : "")
                           << " (configured ramp and limits apply)\n";
             }
@@ -1311,7 +1272,7 @@ void holdFinalPoseUntilSpace(
         if (driver.faultLatched())
             throw std::runtime_error(driver.faultReason());
         const CommandDispatch dispatch = sendTargets(
-            driver, bindings, final_pose, zero_velocity, gravity);
+            bindings, final_pose, zero_velocity, gravity);
         recordSample(
             logger,
             diagnostic,
@@ -1395,8 +1356,6 @@ int main(int argc, char* argv[])
         logger.emplace(
             diagnosticJointNames(), DIAGNOSTIC_RESERVE_SAMPLES);
         DiagnosticState diagnostic;
-        GravityState gravity(motor_config);
-
         raven_control::hal::CanInterface can(CAN_INTERFACE);
         raven_control::hal::MotorDriver driver(
             can,
@@ -1404,6 +1363,7 @@ int main(int argc, char* argv[])
             limiters,
             0xFD,
             motor_config.feedback_timeout);
+        GravityState gravity(driver, motor_config);
         StopGuard stop_guard(driver);
         if (!driver.stopAll())
             throw std::runtime_error("Failed to send startup stop");
@@ -1416,11 +1376,11 @@ int main(int argc, char* argv[])
             << "Joint limits: " << JOINT_LIMITS_PATH << '\n'
             << "Motor config: " << MOTOR_CONFIG_PATH << '\n'
             << "Gravity compensation: "
-            << (gravity.controller.enabled() ? "ON" : "OFF")
-            << (gravity.controller.config().dry_run
+            << (gravity.pipeline.gravityEnabled() ? "ON" : "OFF")
+            << (gravity.pipeline.gravityConfig().dry_run
                     ? " [DRY-RUN]" : " [LIVE]")
-            << " scale=" << gravity.controller.config().scale
-            << " URDF=" << gravity.controller.config().urdf_path << '\n'
+            << " scale=" << gravity.pipeline.gravityConfig().scale
+            << " URDF=" << gravity.pipeline.gravityConfig().urdf_path << '\n'
             << "Motion log: " << log_path << '\n'
             << "ROS 2 joint-state output remains available through "
             << "the separate read-only raven_joint_state_bridge.\n";
@@ -1471,7 +1431,7 @@ int main(int argc, char* argv[])
 
         JointVector current_pose = captured_start;
         RunResult result = RunResult::Completed;
-        if (gravity.controller.enabled()) {
+        if (gravity.pipeline.gravityEnabled()) {
             result = holdPoseFor(
                 "Gravity Ramp",
                 captured_start,

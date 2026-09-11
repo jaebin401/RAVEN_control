@@ -136,6 +136,7 @@ add_library(
     STATIC
     src/control/gravity_feedforward_controller.cpp
     src/control/gravity_validation_session.cpp
+    src/control/mit_command_pipeline.cpp
 )
 target_include_directories(
     raven_gravity_control
@@ -143,7 +144,7 @@ target_include_directories(
 )
 target_link_libraries(
     raven_gravity_control
-    PUBLIC raven_dynamics
+    PUBLIC raven_dynamics raven_hal
 )
 raven_enable_warnings(raven_gravity_control)
 
@@ -308,6 +309,20 @@ if(BUILD_TESTING)
         COMMAND gravity_validation_session_test
     )
 
+    add_executable(
+        mit_command_pipeline_test
+        tests/mit_command_pipeline_test.cpp
+    )
+    target_link_libraries(
+        mit_command_pipeline_test
+        PRIVATE raven_gravity_control
+    )
+    raven_enable_warnings(mit_command_pipeline_test)
+    add_test(
+        NAME mit_command_pipeline_test
+        COMMAND mit_command_pipeline_test
+    )
+
     if(RAVEN_ENABLE_PINOCCHIO_DYNAMICS)
         if(NOT EXISTS "${RAVEN_URDF_PATH}")
             message(FATAL_ERROR
@@ -385,21 +400,32 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         tools/motor_id_config.cpp
     )
 
-    add_executable(
-        motor_gain_tuner
-        tools/motor_gain_tuner.cpp
-    )
-    target_link_libraries(motor_gain_tuner PRIVATE raven_hal)
-    raven_enable_warnings(motor_gain_tuner)
-
-    add_executable(
-        position_control_multi
-        apps/debug/position_control_multi.cpp
-    )
-    target_link_libraries(position_control_multi PRIVATE raven_hal)
-    raven_enable_warnings(position_control_multi)
-
     if(RAVEN_ENABLE_PINOCCHIO_DYNAMICS)
+        add_executable(
+            motor_gain_tuner
+            tools/motor_gain_tuner.cpp
+        )
+        target_link_libraries(
+            motor_gain_tuner
+            PRIVATE
+                raven_hal
+                raven_gravity_control
+                raven_pinocchio_dynamics
+        )
+        raven_enable_warnings(motor_gain_tuner)
+
+        add_executable(
+            position_control_multi
+            apps/debug/position_control_multi.cpp
+        )
+        target_link_libraries(
+            position_control_multi
+            PRIVATE
+                raven_hal
+                raven_gravity_control
+                raven_pinocchio_dynamics
+        )
+        raven_enable_warnings(position_control_multi)
         add_executable(
             coordinated_motion_demo
             apps/coordinated_motion_demo.cpp
