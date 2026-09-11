@@ -404,6 +404,10 @@ int main(int argc, char* argv[])
         auto motor_config =
             raven_control::config::loadMotorRuntimeConfig(
                 motor_config_path);
+        if (!motor_config.position_control_enabled) {
+            throw std::runtime_error(
+                "Gain tuning requires position_control.enabled=true");
+        }
         const JointBindings bindings =
             bindConfiguredJoints(motor_config);
         auto states = tuningStates(bindings);

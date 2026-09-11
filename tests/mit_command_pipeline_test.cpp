@@ -277,12 +277,71 @@ void testStaleFeedbackEntersExistingHalHold()
           "stale feedback must be delegated to HAL Feedback Hold");
 }
 
+void testDisabledPositionControlForcesZeroGainsButKeepsGravity()
+{
+    FakeCanTransport transport;
+    raven_control::hal::MotorDriver driver(
+        transport, motorMap(), limiters());
+    for (std::uint8_t id = 1; id <= 3; ++id)
+        transport.incoming.push_back(positionFeedback(id, 0.0F));
+    driver.poll();
+    check(
+        driver.enableAll() == raven_control::hal::MotorCommandResult::Sent,
+        "zero-gain fixture must enable");
+    for (std::uint8_t id = 1; id <= 3; ++id)
+        transport.incoming.push_back(operationFeedback(id, 0.0));
+    driver.poll();
+
+    auto config = runtimeConfig();
+    config.position_control_enabled = false;
+    raven_control::control::MitCommandPipeline pipeline(
+        driver,
+        std::make_unique<FixedGravityModel>(),
+        config,
+        {"shoulder_Joint", "upperArm_Joint", "foreArm_Joint"});
+    const auto start = Clock::now();
+    pipeline.reset(start);
+
+    raven_control::control::MitCommandPipeline::Commands commands{};
+    for (auto& command : commands) {
+        command.kp = 25.0;
+        command.kd = 2.0;
+    }
+
+    transport.sent.clear();
+    const auto result = pipeline.send(
+        commands,
+        start + std::chrono::milliseconds(100));
+    check(result.all_sent,
+          "disabled position control must still dispatch MIT commands");
+    check(std::abs(result.final_feedforward_torque_nm[1] - 1.0) < 1e-12,
+          "disabled position control must preserve gravity feedforward");
+    check(std::abs(result.final_feedforward_torque_nm[2] + 0.5) < 1e-12,
+          "disabled position control must preserve all gravity torques");
+
+    std::size_t operation_frames = 0;
+    for (const auto& frame : transport.sent) {
+        if (communicationType(frame) != COMM_OPERATION_CONTROL)
+            continue;
+        ++operation_frames;
+        check(
+            frame.data[4] == 0 && frame.data[5] == 0,
+            "disabled position control must encode Kp as zero");
+        check(
+            frame.data[6] == 0 && frame.data[7] == 0,
+            "disabled position control must encode Kd as zero");
+    }
+    check(operation_frames == 3,
+          "zero-gain cycle must emit one MIT frame per joint");
+}
+
 }  // namespace
 
 int main()
 {
     testAddsGravityToEveryJointAndDispatchesOnce();
     testStaleFeedbackEntersExistingHalHold();
+    testDisabledPositionControlForcesZeroGainsButKeepsGravity();
     if (failures != 0) {
         std::cerr << failures << " MIT pipeline test(s) failed\n";
         return 1;

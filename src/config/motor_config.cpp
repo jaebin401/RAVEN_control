@@ -219,6 +219,20 @@ const JointMotorRuntimeConfig* MotorRuntimeConfig::findJoint(
     return nullptr;
 }
 
+double effectivePositionKp(
+    const MotorRuntimeConfig& config,
+    double requested_kp) noexcept
+{
+    return config.position_control_enabled ? requested_kp : 0.0;
+}
+
+double effectivePositionKd(
+    const MotorRuntimeConfig& config,
+    double requested_kd) noexcept
+{
+    return config.position_control_enabled ? requested_kd : 0.0;
+}
+
 MotorRuntimeConfig loadMotorRuntimeConfig(
     const std::string& yaml_path)
 {
@@ -246,6 +260,23 @@ MotorRuntimeConfig loadMotorRuntimeConfig(
         requiredMilliseconds(runtime, "feedback_timeout_ms");
     config.position_request_period =
         requiredMilliseconds(runtime, "position_request_period_ms");
+
+    if (const YAML::Node position_control = root["position_control"]) {
+        if (!position_control.IsMap()) {
+            throw std::runtime_error(
+                "position_control must be a map");
+        }
+        try {
+            config.position_control_enabled =
+                position_control["enabled"]
+                ? position_control["enabled"].as<bool>()
+                : true;
+        } catch (const YAML::Exception& error) {
+            throw std::runtime_error(
+                "Position control config has invalid 'enabled': " +
+                std::string(error.what()));
+        }
+    }
     // Backward-compatible read of the legacy switch. New configuration
     // belongs to the top-level gravity_compensation map below.
     if (const YAML::Node enabled = runtime["gravity_compensation_enabled"]) {
@@ -385,6 +416,12 @@ void saveMotorRuntimeConfig(
     output << YAML::Key << "position_request_period_ms"
            << YAML::Value
            << config.position_request_period.count();
+    output << YAML::EndMap;
+
+    output << YAML::Key << "position_control" << YAML::Value
+           << YAML::BeginMap;
+    output << YAML::Key << "enabled" << YAML::Value
+           << config.position_control_enabled;
     output << YAML::EndMap;
 
     output << YAML::Key << "gravity_compensation" << YAML::Value

@@ -5,6 +5,11 @@ runtime:
   feedback_timeout_ms: 250
   position_request_period_ms: 100
 
+# Disable this for gravity-feedforward-only operation without editing every
+# joint's stored tuning gains.
+position_control:
+  enabled: true
+
 # Safe commissioning defaults: this parses the URDF and computes g(q), but
 # sends zero feedforward torque until dry_run is false, scale is positive,
 # and non-zero per-joint torque limits are configured deliberately.

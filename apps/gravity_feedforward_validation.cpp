@@ -212,6 +212,11 @@ void validateLiveConfiguration(
     const raven_control::safety::JointLimiterMap& limiters)
 {
     const auto& gravity = config.gravity_compensation;
+    if (!config.position_control_enabled) {
+        throw std::runtime_error(
+            "Refusing to arm: gravity validation requires "
+            "position_control.enabled=true for its non-test joint holds");
+    }
     if (!gravity.enabled) {
         throw std::runtime_error(
             "Refusing to arm: gravity_compensation.enabled must be true");

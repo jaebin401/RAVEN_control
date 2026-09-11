@@ -245,21 +245,26 @@ std::vector<raven_control::hal::JointMotorConfig> motorMap(
 }
 
 void initializeControlStates(
+    const raven_control::config::MotorRuntimeConfig& config,
     const JointBindings& bindings,
     std::array<ControlState, JOINTS.size()>& states)
 {
     for (std::size_t index = 0; index < JOINTS.size(); ++index) {
         states[index].kp.store(
-            bindings[index]->position_control.kp);
+            raven_control::config::effectivePositionKp(
+                config, bindings[index]->position_control.kp));
         states[index].kd.store(
-            bindings[index]->position_control.kd);
+            raven_control::config::effectivePositionKd(
+                config, bindings[index]->position_control.kd));
         states[index].max_slew_rate_rad_s =
             bindings[index]->
                 position_control.max_slew_rate_rad_s;
     }
 }
 
-void printHelp(const JointBindings& bindings)
+void printHelp(
+    const raven_control::config::MotorRuntimeConfig& config,
+    const JointBindings& bindings)
 {
     std::cout
         << "========================================\n"
@@ -278,8 +283,10 @@ void printHelp(const JointBindings& bindings)
         std::cout
             << JOINTS[index].name
             << " ID=" << static_cast<int>(bindings[index]->motor_id)
-            << " Kp=" << bindings[index]->position_control.kp
-            << " Kd=" << bindings[index]->position_control.kd
+            << " Kp=" << raven_control::config::effectivePositionKp(
+                   config, bindings[index]->position_control.kp)
+            << " Kd=" << raven_control::config::effectivePositionKd(
+                   config, bindings[index]->position_control.kd)
             << " slew="
             << bindings[index]->
                 position_control.max_slew_rate_rad_s
@@ -507,7 +514,7 @@ int main(int argc, char* argv[])
             motor_config,
             {"shoulder_Joint", "upperArm_Joint", "foreArm_Joint"});
         std::array<ControlState, JOINTS.size()> states;
-        initializeControlStates(bindings, states);
+        initializeControlStates(motor_config, bindings, states);
         std::atomic<bool> running{true};
         std::atomic<bool> monitor_active{true};
 
@@ -540,8 +547,13 @@ int main(int argc, char* argv[])
         }
         std::cout
             << "Joint limits: " << limits_path << '\n'
-            << "Motor config: " << motor_config_path << '\n';
-        printHelp(bindings);
+            << "Motor config: " << motor_config_path << '\n'
+            << "Position control: "
+            << (motor_config.position_control_enabled
+                    ? "ENABLED"
+                    : "DISABLED (Kp/Kd forced to zero)")
+            << '\n';
+        printHelp(motor_config, bindings);
 
         TerminalMode terminal;
         std::thread control_thread(

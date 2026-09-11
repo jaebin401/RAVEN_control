@@ -70,6 +70,8 @@ void testValidConfig()
 {
     const auto config = validConfig();
     config.validate();
+    check(config.position_control_enabled,
+          "position control must default to enabled");
     check(!config.gravity_compensation.enabled,
           "gravity compensation must default to disabled");
     check(config.gravity_compensation.dry_run,
@@ -80,6 +82,24 @@ void testValidConfig()
           "configured joint must be found");
     check(config.findJoint("missing") == nullptr,
           "unknown joint must not be found");
+}
+
+void testEffectivePositionGains()
+{
+    auto config = validConfig();
+    check(
+        raven_control::config::effectivePositionKp(config, 12.0) == 12.0,
+        "enabled position control must preserve Kp");
+    check(
+        raven_control::config::effectivePositionKd(config, 0.5) == 0.5,
+        "enabled position control must preserve Kd");
+    config.position_control_enabled = false;
+    check(
+        raven_control::config::effectivePositionKp(config, 12.0) == 0.0,
+        "disabled position control must force Kp to zero");
+    check(
+        raven_control::config::effectivePositionKd(config, 0.5) == 0.0,
+        "disabled position control must force Kd to zero");
 }
 
 void testValidation()
@@ -148,6 +168,7 @@ void testYamlRoundTrip(const std::string& example_path)
     check(config.gravity_compensation.scale == 0.0,
           "example config must keep gravity scale at zero");
 
+    config.position_control_enabled = false;
     config.gravity_compensation.enabled = true;
     config.gravity_compensation.scale = 0.2;
     config.gravity_compensation.max_joint_torque_nm = {0.1, 0.2, 0.3};
@@ -160,6 +181,8 @@ void testYamlRoundTrip(const std::string& example_path)
         round_trip_path.string());
     std::filesystem::remove(round_trip_path);
 
+    check(!loaded.position_control_enabled,
+          "saved position-control enabled state must round-trip");
     check(loaded.gravity_compensation.enabled,
           "saved gravity enabled state must round-trip");
     check(loaded.gravity_compensation.dry_run,
@@ -178,6 +201,7 @@ void testYamlRoundTrip(const std::string& example_path)
 int main(int argc, char* argv[])
 {
     testValidConfig();
+    testEffectivePositionGains();
     testValidation();
     if (argc > 1)
         testYamlRoundTrip(argv[1]);

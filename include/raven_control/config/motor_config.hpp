@@ -30,6 +30,7 @@ struct MotorRuntimeConfig {
     std::chrono::milliseconds control_period{20};
     std::chrono::milliseconds feedback_timeout{250};
     std::chrono::milliseconds position_request_period{100};
+    bool position_control_enabled = true;
     GravityCompensationConfig gravity_compensation;
     std::vector<JointMotorRuntimeConfig> joints;
 
@@ -38,6 +39,14 @@ struct MotorRuntimeConfig {
     [[nodiscard]] const JointMotorRuntimeConfig* findJoint(
         const std::string& joint_name) const noexcept;
 };
+
+[[nodiscard]] double effectivePositionKp(
+    const MotorRuntimeConfig& config,
+    double requested_kp) noexcept;
+
+[[nodiscard]] double effectivePositionKd(
+    const MotorRuntimeConfig& config,
+    double requested_kd) noexcept;
 
 [[nodiscard]] MotorRuntimeConfig loadMotorRuntimeConfig(
     const std::string& yaml_path);

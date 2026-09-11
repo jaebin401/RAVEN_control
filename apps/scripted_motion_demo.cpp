@@ -919,8 +919,10 @@ void recordSample(
         joint.gravity_dry_run = gravity.dry_run;
         joint.gravity_input_valid = gravity.input_valid;
         joint.gravity_torque_clamped = gravity.torque_clamped[index];
-        joint.kp = bindings[index]->position_control.kp;
-        joint.kd = bindings[index]->position_control.kd;
+        joint.kp = raven_control::config::effectivePositionKp(
+            config, bindings[index]->position_control.kp);
+        joint.kd = raven_control::config::effectivePositionKd(
+            config, bindings[index]->position_control.kd);
         const auto feedback = driver.feedback(JOINT_NAMES[index]);
         if (!feedback || !feedback->valid) {
             joint.actual_position_rad = nan;
@@ -1375,6 +1377,11 @@ int main(int argc, char* argv[])
             << "CAN interface: " << CAN_INTERFACE << '\n'
             << "Joint limits: " << JOINT_LIMITS_PATH << '\n'
             << "Motor config: " << MOTOR_CONFIG_PATH << '\n'
+            << "Position control: "
+            << (motor_config.position_control_enabled
+                    ? "ENABLED"
+                    : "DISABLED (Kp/Kd forced to zero)")
+            << '\n'
             << "Gravity compensation: "
             << (gravity.pipeline.gravityEnabled() ? "ON" : "OFF")
             << (gravity.pipeline.gravityConfig().dry_run

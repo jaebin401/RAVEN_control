@@ -151,12 +151,16 @@ MitCommandPipelineResult MitCommandPipeline::send(
 
     for (std::size_t index = 0; index < commands.size(); ++index) {
         const auto& command = commands[index];
+        const double effective_kp = config::effectivePositionKp(
+            config_, command.kp);
+        const double effective_kd = config::effectivePositionKd(
+            config_, command.kd);
         result.motor_results[index] = driver_.sendMitCommand(
             joint_names_[index],
             command.target_position_rad,
             command.target_velocity_rad_s,
-            command.kp,
-            command.kd,
+            effective_kp,
+            effective_kd,
             result.final_feedforward_torque_nm[index]);
 
         const auto motor_result = result.motor_results[index];

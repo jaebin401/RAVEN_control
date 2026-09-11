@@ -590,8 +590,10 @@ void recordDiagnosticSample(
         joint_sample.gravity_input_valid = gravity.input_valid;
         joint_sample.gravity_torque_clamped =
             gravity.torque_clamped[index];
-        joint_sample.kp = bindings[index]->position_control.kp;
-        joint_sample.kd = bindings[index]->position_control.kd;
+        joint_sample.kp = raven_control::config::effectivePositionKp(
+            config, bindings[index]->position_control.kp);
+        joint_sample.kd = raven_control::config::effectivePositionKd(
+            config, bindings[index]->position_control.kd);
 
         const auto feedback = driver.feedback(JOINTS[index].name);
         if (feedback && feedback->valid) {
@@ -982,6 +984,11 @@ int main(int argc, char* argv[])
             << "Joint limits: " << limits_path << '\n'
             << "Motor config: " << motor_config_path << '\n'
             << "Motion log: " << log_path << '\n'
+            << "Position control: "
+            << (motor_config.position_control_enabled
+                    ? "ENABLED"
+                    : "DISABLED (Kp/Kd forced to zero)")
+            << '\n'
             << "Gravity compensation: "
             << (gravity.pipeline.gravityEnabled() ? "ON" : "OFF")
             << (gravity.pipeline.gravityConfig().dry_run
