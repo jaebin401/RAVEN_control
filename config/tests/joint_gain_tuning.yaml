@@ -17,6 +17,10 @@ runtime:
   startup_transition_s: 3.0
   final_hold_s: 1.0
   startup_gravity_scale: 1.0
+  abort_position_error_deg: 3.0
+  abort_velocity_deg_s: 60.0
+  abort_measured_torque_nm: 5.0
+  abort_consecutive_samples: 3
 
 startup_target_deg:
   shoulder_Joint: 0.0
@@ -31,7 +35,9 @@ phases:
     gravity_scale: 1.0
     analysis_window: true
     gains:
+      shoulder_Joint: {kp: 8.0, kd: 0.15}
       upperArm_Joint: {kp: 4.0, kd: 0.10}
+      foreArm_Joint: {kp: 8.0, kd: 0.15}
 
   - name: kp4_kd010_return
     motion: step
@@ -40,7 +46,9 @@ phases:
     gravity_scale: 1.0
     analysis_window: true
     gains:
+      shoulder_Joint: {kp: 8.0, kd: 0.15}
       upperArm_Joint: {kp: 4.0, kd: 0.10}
+      foreArm_Joint: {kp: 8.0, kd: 0.15}
 
   - name: kp8_kd015_positive
     motion: step
@@ -49,7 +57,9 @@ phases:
     gravity_scale: 1.0
     analysis_window: true
     gains:
+      shoulder_Joint: {kp: 8.0, kd: 0.15}
       upperArm_Joint: {kp: 8.0, kd: 0.15}
+      foreArm_Joint: {kp: 8.0, kd: 0.15}
 
   - name: kp8_kd015_return
     motion: step
@@ -58,7 +68,9 @@ phases:
     gravity_scale: 1.0
     analysis_window: true
     gains:
+      shoulder_Joint: {kp: 8.0, kd: 0.15}
       upperArm_Joint: {kp: 8.0, kd: 0.15}
+      foreArm_Joint: {kp: 8.0, kd: 0.15}
 
   - name: kp12_kd025_positive
     motion: step
@@ -67,7 +79,9 @@ phases:
     gravity_scale: 1.0
     analysis_window: true
     gains:
+      shoulder_Joint: {kp: 8.0, kd: 0.15}
       upperArm_Joint: {kp: 12.0, kd: 0.25}
+      foreArm_Joint: {kp: 8.0, kd: 0.15}
 
   - name: kp12_kd025_return
     motion: step
@@ -76,5 +90,6 @@ phases:
     gravity_scale: 1.0
     analysis_window: true
     gains:
+      shoulder_Joint: {kp: 8.0, kd: 0.15}
       upperArm_Joint: {kp: 12.0, kd: 0.25}
-
+      foreArm_Joint: {kp: 8.0, kd: 0.15}

@@ -14,6 +14,13 @@ control demos. It does not modify `config/motor_config.yaml`.
 - A step test may move exactly one joint and is capped by `max_step_deg`.
 - RS02 faults, stale feedback, CAN errors, `Q`, Ctrl-C, and SIGTERM terminate
   the test and send stop commands to every motor.
+- Gain-tuning plans require `position_control.enabled: true` and live gravity
+  compensation with positive scale and per-joint torque limits.
+- Before a gain sweep moves, gravity feedforward ramps up at the captured pose
+  for the configured `gravity_compensation.ramp_duration_ms`.
+- Gain tuning stops automatically after three consecutive samples exceed the
+  configured tracking-error, velocity, or measured-torque limit. The included
+  plans use 3 deg, 60 deg/s, and 5 N.m respectively.
 - RS02 bus voltage parameter `0x701C` is requested throughout the run and
   written to the CSV. This is monitoring, not an energy-absorption mechanism.
 
@@ -98,9 +105,14 @@ python3 tools/analyze_characterization.py \
   --max-peak-error-deg 2.0
 ```
 
-The analyzer reports per-analysis-phase tracking error, drift, velocity, and
-measured torque, plus global VBUS, temperature, fault, feedback-validity, and
-control-loop timing metrics.
+The analyzer reports per-analysis-phase tracking error, overshoot, settling
+time, drift, velocity reversals, measured torque, and D-torque switching, plus
+global VBUS, temperature, fault, feedback-validity, and control-loop timing
+metrics. For a gain sweep it also writes `recommended_gains.yaml`, ranks the
+tested candidates with a bounded heuristic score, and refuses to recommend a
+candidate that exceeds the default 2 deg peak-error or 0.5 N.m D-torque-step
+limits. Treat the selected candidate as the next hardware-validation value,
+not as permission to skip operator observation.
 
 ## Git handoff
 
@@ -108,4 +120,3 @@ Commit the complete run directory without changing its contents. The plan and
 configuration snapshots are required even when the source commit is recorded.
 On macOS, pull the commit and provide the run directory under `tests/results/`
 for fitting, plots, gain selection, and acceptance review.
-

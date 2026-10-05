@@ -323,6 +323,17 @@ if(BUILD_TESTING)
         COMMAND mit_command_pipeline_test
     )
 
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME analyze_characterization_test
+            COMMAND
+                "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/analyze_characterization_test.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/analyze_characterization.py"
+        )
+    endif()
+
     if(RAVEN_ENABLE_PINOCCHIO_DYNAMICS)
         if(NOT EXISTS "${RAVEN_URDF_PATH}")
             message(FATAL_ERROR
@@ -500,6 +511,21 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             raven_dynamics
             ${RAVEN_YAML_CPP_TARGET}
     )
+    if(RAVEN_ENABLE_PINOCCHIO_DYNAMICS)
+        target_link_libraries(
+            joint_characterization
+            PRIVATE raven_pinocchio_dynamics
+        )
+        target_compile_definitions(
+            joint_characterization
+            PRIVATE RAVEN_HAS_PINOCCHIO_DYNAMICS=1
+        )
+    else()
+        target_compile_definitions(
+            joint_characterization
+            PRIVATE RAVEN_HAS_PINOCCHIO_DYNAMICS=0
+        )
+    endif()
     raven_enable_warnings(joint_characterization)
 
     raven_add_linux_executable(

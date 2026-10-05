@@ -1,5 +1,8 @@
 #include "raven_control/config/motor_config.hpp"
 #include "raven_control/dynamics/gravity_compensator.hpp"
+#if RAVEN_HAS_PINOCCHIO_DYNAMICS
+#include "raven_control/dynamics/pinocchio_gravity_model.hpp"
+#endif
 #include "raven_control/hal/can_interface.hpp"
 #include "raven_control/hal/motor_driver.hpp"
 #include "raven_control/logging/motion_logger.hpp"
@@ -43,9 +46,15 @@ constexpr std::array<const char*, 3> JOINT_NAMES{{
     "foreArm_Joint",
 }};
 constexpr std::array<double, 3> GRAVITY_DIRECTION_SCALE{{
+#if RAVEN_HAS_PINOCCHIO_DYNAMICS
+    1.0,
+    1.0,
+    1.0,
+#else
     1.0,
     -1.0,
     -1.0,
+#endif
 }};
 
 using JointVector = std::array<double, JOINT_NAMES.size()>;
@@ -88,6 +97,10 @@ struct TestPlan {
     double startup_transition_seconds = 3.0;
     double final_hold_seconds = 1.0;
     double startup_gravity_scale = 1.0;
+    double abort_position_error_rad = 3.0 * PI / 180.0;
+    double abort_velocity_rad_s = 60.0 * PI / 180.0;
+    double abort_measured_torque_nm = 5.0;
+    std::size_t abort_consecutive_samples = 3;
     std::size_t repeat_count = 1;
     JointVector startup_target_rad{};
     std::vector<Phase> phases;
@@ -306,13 +319,25 @@ TestPlan loadTestPlan(
         runtime, "final_hold_s", "runtime");
     plan.startup_gravity_scale = requiredValue<double>(
         runtime, "startup_gravity_scale", "runtime");
+    if (const YAML::Node value = runtime["abort_position_error_deg"])
+        plan.abort_position_error_rad = degreesToRadians(value.as<double>());
+    if (const YAML::Node value = runtime["abort_velocity_deg_s"])
+        plan.abort_velocity_rad_s = degreesToRadians(value.as<double>());
+    if (const YAML::Node value = runtime["abort_measured_torque_nm"])
+        plan.abort_measured_torque_nm = value.as<double>();
+    if (const YAML::Node value = runtime["abort_consecutive_samples"])
+        plan.abort_consecutive_samples = value.as<std::size_t>();
     if (plan.vbus_request_period.count() <= 0 ||
         plan.soft_limit_clearance_rad < 0.0 ||
         plan.max_step_rad <= 0.0 ||
         plan.startup_transition_seconds <= 0.0 ||
         plan.final_hold_seconds < 0.0 ||
         plan.startup_gravity_scale < 0.0 ||
-        plan.startup_gravity_scale > 1.0) {
+        plan.startup_gravity_scale > 1.0 ||
+        plan.abort_position_error_rad <= 0.0 ||
+        plan.abort_velocity_rad_s <= 0.0 ||
+        plan.abort_measured_torque_nm <= 0.0 ||
+        plan.abort_consecutive_samples == 0) {
         throw std::runtime_error("runtime contains an invalid safety value");
     }
 
@@ -378,6 +403,42 @@ TestPlan loadTestPlan(
         plan.phases.push_back(std::move(phase));
     }
     return plan;
+}
+
+void validateGainTuningConfiguration(
+    const TestPlan& plan,
+    const raven_control::config::MotorRuntimeConfig& config)
+{
+    if (plan.type != "gain_tuning")
+        return;
+    if (!config.position_control_enabled) {
+        throw std::runtime_error(
+            "Gain tuning requires position_control.enabled=true");
+    }
+    const auto& gravity = config.gravity_compensation;
+    if (!gravity.enabled || gravity.dry_run || gravity.scale <= 0.0) {
+        throw std::runtime_error(
+            "Gain tuning requires live gravity compensation with a "
+            "positive configured scale");
+    }
+    if (plan.startup_gravity_scale <= 0.0) {
+        throw std::runtime_error(
+            "Gain tuning requires a positive startup_gravity_scale");
+    }
+    for (std::size_t index = 0; index < JOINT_NAMES.size(); ++index) {
+        if (gravity.max_joint_torque_nm[index] <= 0.0) {
+            throw std::runtime_error(
+                "Gain tuning requires a positive gravity torque limit for '" +
+                std::string(JOINT_NAMES[index]) + "'");
+        }
+    }
+    for (const Phase& phase : plan.phases) {
+        if (phase.gravity_scale <= 0.0) {
+            throw std::runtime_error(
+                "Gain tuning phase '" + phase.name +
+                "' requires positive gravity_scale");
+        }
+    }
 }
 
 std::string motorConfigPathFromPlan(const std::string& path)
@@ -755,9 +816,13 @@ JointVector readJointPositions(raven_control::hal::MotorDriver& driver)
 
 JointVector gravityTorque(
     raven_control::hal::MotorDriver& driver,
-    const raven_control::dynamics::GravityCompensator& compensator,
+    const raven_control::dynamics::GravityModel& gravity_model,
+    const raven_control::config::MotorRuntimeConfig& config,
     double scale)
 {
+    if (!config.gravity_compensation.enabled ||
+        config.gravity_compensation.dry_run)
+        return {};
     raven_control::dynamics::JointVector positions{};
     for (std::size_t index = 0; index < JOINT_NAMES.size(); ++index) {
         const auto feedback = driver.feedback(JOINT_NAMES[index]);
@@ -765,13 +830,57 @@ JointVector gravityTorque(
             return {};
         positions[index] = feedback->position_rad;
     }
-    const JointVector raw = compensator.compute(positions);
+    const JointVector raw = gravity_model.compute(positions);
     JointVector result{};
     for (std::size_t index = 0; index < JOINT_NAMES.size(); ++index) {
-        result[index] =
-            scale * GRAVITY_DIRECTION_SCALE[index] * raw[index];
+        const double requested =
+            config.gravity_compensation.scale * scale *
+            GRAVITY_DIRECTION_SCALE[index] * raw[index];
+        const double limit =
+            config.gravity_compensation.max_joint_torque_nm[index];
+        if (std::abs(requested) > limit) {
+            throw std::runtime_error(
+                "Gravity torque reached the configured limit for '" +
+                std::string(JOINT_NAMES[index]) + "'");
+        }
+        result[index] = requested;
     }
     return result;
+}
+
+void enforceLiveTuningSafety(
+    raven_control::hal::MotorDriver& driver,
+    const JointVector& target,
+    const TestPlan& plan,
+    std::array<std::size_t, JOINT_NAMES.size()>& violation_counts)
+{
+    if (plan.type != "gain_tuning")
+        return;
+    for (std::size_t index = 0; index < JOINT_NAMES.size(); ++index) {
+        const auto feedback = driver.feedback(JOINT_NAMES[index]);
+        if (!feedback || !feedback->valid ||
+            !feedback->operation_feedback_valid) {
+            violation_counts[index] = 0;
+            continue;
+        }
+        const bool violated =
+            std::abs(target[index] - feedback->position_rad) >
+                plan.abort_position_error_rad ||
+            std::abs(feedback->velocity_rad_s) >
+                plan.abort_velocity_rad_s ||
+            std::abs(feedback->torque_nm) >
+                plan.abort_measured_torque_nm;
+        violation_counts[index] = violated
+            ? violation_counts[index] + 1
+            : 0;
+        if (violation_counts[index] >= plan.abort_consecutive_samples) {
+            throw std::runtime_error(
+                "Automatic tuning safety stop on '" +
+                std::string(JOINT_NAMES[index]) +
+                "': tracking error, velocity, or measured torque "
+                "exceeded its configured limit");
+        }
+    }
 }
 
 void recordSample(
@@ -912,15 +1021,18 @@ void runTrajectory(
     const JointVector& kd,
     raven_control::hal::MotorDriver& driver,
     const raven_control::config::MotorRuntimeConfig& config,
-    const raven_control::dynamics::GravityCompensator& compensator,
+    const TestPlan& plan,
+    const raven_control::dynamics::GravityModel& gravity_model,
     std::chrono::milliseconds vbus_period,
     raven_control::logging::MotionLogger& logger,
-    DiagnosticState& diagnostic)
+    DiagnosticState& diagnostic,
+    bool ramp_gravity = false)
 {
     const auto started_at = std::chrono::steady_clock::now();
     auto next_cycle = started_at;
     auto next_vbus = started_at;
     auto next_status = started_at;
+    std::array<std::size_t, JOINT_NAMES.size()> violation_counts{};
     while (true) {
         const auto now = std::chrono::steady_clock::now();
         const double elapsed =
@@ -938,8 +1050,17 @@ void runTrajectory(
             next_vbus = now + vbus_period;
         }
         const TrajectorySample target = trajectory.sample(elapsed);
+        enforceLiveTuningSafety(
+            driver, target.position, plan, violation_counts);
+        double effective_gravity_scale = gravity_scale;
+        if (ramp_gravity) {
+            const double ramp_seconds = std::chrono::duration<double>(
+                config.gravity_compensation.ramp_duration).count();
+            effective_gravity_scale *= std::clamp(
+                elapsed / ramp_seconds, 0.0, 1.0);
+        }
         const JointVector torque = gravityTorque(
-            driver, compensator, gravity_scale);
+            driver, gravity_model, config, effective_gravity_scale);
         sendTargets(
             driver,
             target.position,
@@ -985,7 +1106,7 @@ void runTrajectory(
     const TrajectorySample target = trajectory.sample(
         trajectory.total_seconds);
     const JointVector torque = gravityTorque(
-        driver, compensator, gravity_scale);
+        driver, gravity_model, config, gravity_scale);
     sendTargets(
         driver,
         target.position,
@@ -1132,14 +1253,29 @@ void printPlan(const TestPlan& plan)
               << "Q or Ctrl-C: stop and disable motors\n";
 }
 
-bool waitForStart()
+bool waitForStart(
+    raven_control::hal::MotorDriver& driver,
+    const raven_control::config::MotorRuntimeConfig& config)
 {
     std::cout << "\nSPACE: start the validated plan\n"
               << "Q: cancel while motors remain disabled\n"
               << std::flush;
+    auto next_request = std::chrono::steady_clock::now();
     while (true) {
         if (stop_requested != 0)
             return false;
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_request) {
+            if (!driver.requestMechanicalPositions()) {
+                throw std::runtime_error(
+                    "Failed to refresh Type 17 positions while "
+                    "waiting to start");
+            }
+            next_request = now + config.position_request_period;
+        }
+        (void)driver.poll();
+        if (driver.faultLatched())
+            throw std::runtime_error(driver.faultReason());
         if (keyAvailable()) {
             const auto key = readKey();
             if (key && *key == ' ')
@@ -1187,6 +1323,7 @@ int main(int argc, char* argv[])
         plan = loadTestPlan(plan_path, bindings);
         if (argc == 3)
             plan.output_root = argv[2];
+        validateGainTuningConfiguration(plan, runtime_config);
         const auto limiters =
             raven_control::safety::loadJointLimiters(
                 plan.joint_limits_path);
@@ -1211,8 +1348,13 @@ int main(int argc, char* argv[])
                 JOINT_NAMES[0], JOINT_NAMES[1], JOINT_NAMES[2]},
             100000);
         DiagnosticState diagnostic;
-        raven_control::dynamics::GravityCompensator compensator(
+#if RAVEN_HAS_PINOCCHIO_DYNAMICS
+        raven_control::dynamics::PinocchioGravityModel gravity_model(
+            runtime_config.gravity_compensation.urdf_path);
+#else
+        raven_control::dynamics::GravityCompensator gravity_model(
             raven_control::dynamics::makeRavenUrdfGravityModel());
+#endif
         raven_control::hal::CanInterface can(plan.can_interface);
         raven_control::hal::MotorDriver driver(
             can,
@@ -1225,7 +1367,7 @@ int main(int argc, char* argv[])
             throw std::runtime_error("Failed to send startup stop");
         requestInitialFeedback(driver, runtime_config);
 
-        const JointVector current = readJointPositions(driver);
+        JointVector current = readJointPositions(driver);
         validatePose(
             current,
             "Current pose",
@@ -1242,12 +1384,20 @@ int main(int argc, char* argv[])
         std::cout << '\n';
 
         TerminalMode terminal;
-        if (!waitForStart()) {
+        if (!waitForStart(driver, runtime_config)) {
             writeRunStatus(*run_directory, "cancelled", "Cancelled", 0);
             std::cout << "\nCancelled. Results: "
                       << run_directory->string() << '\n';
             return 0;
         }
+
+        requestInitialFeedback(driver, runtime_config);
+        current = readJointPositions(driver);
+        validatePose(
+            current,
+            "Captured start pose",
+            limiters,
+            0.0);
 
         const auto enable_result = driver.enableAll();
         if (enable_result != raven_control::hal::MotorCommandResult::Sent) {
@@ -1258,12 +1408,18 @@ int main(int argc, char* argv[])
 
         const JointVector base_kp = defaultKp(bindings);
         const JointVector base_kd = defaultKd(bindings);
+        const JointVector startup_kp = plan.type == "gain_tuning"
+            ? plan.phases.front().kp
+            : base_kp;
+        const JointVector startup_kd = plan.type == "gain_tuning"
+            ? plan.phases.front().kd
+            : base_kd;
         Phase startup;
         startup.name = "startup";
         startup.motion = MotionKind::Quintic;
         startup.target_rad = plan.startup_target_rad;
-        startup.kp = base_kp;
-        startup.kd = base_kd;
+        startup.kp = startup_kp;
+        startup.kd = startup_kd;
         startup.duration_seconds = plan.startup_transition_seconds;
         for (std::size_t index = 0;
              index < JOINT_NAMES.size(); ++index) {
@@ -1276,6 +1432,31 @@ int main(int argc, char* argv[])
                 minimum_duration * 1.05);
         }
         startup.gravity_scale = plan.startup_gravity_scale;
+        if (plan.type == "gain_tuning") {
+            const Phase gravity_ramp = makeHoldPhase(
+                "gravity_ramp",
+                current,
+                startup_kp,
+                startup_kd,
+                std::chrono::duration<double>(
+                    runtime_config.gravity_compensation.ramp_duration)
+                    .count(),
+                plan.startup_gravity_scale);
+            runTrajectory(
+                makeTrajectory(gravity_ramp, current),
+                "gravity_ramp",
+                gravity_ramp.gravity_scale,
+                gravity_ramp.kp,
+                gravity_ramp.kd,
+                driver,
+                runtime_config,
+                plan,
+                gravity_model,
+                plan.vbus_request_period,
+                *logger,
+                diagnostic,
+                true);
+        }
         runTrajectory(
             makeTrajectory(startup, current),
             "startup",
@@ -1284,7 +1465,8 @@ int main(int argc, char* argv[])
             startup.kd,
             driver,
             runtime_config,
-            compensator,
+            plan,
+            gravity_model,
             plan.vbus_request_period,
             *logger,
             diagnostic);
@@ -1305,7 +1487,8 @@ int main(int argc, char* argv[])
                     phase.kd,
                     driver,
                     runtime_config,
-                    compensator,
+                    plan,
+                    gravity_model,
                     plan.vbus_request_period,
                     *logger,
                     diagnostic);
@@ -1326,7 +1509,8 @@ int main(int argc, char* argv[])
                         hold.kd,
                         driver,
                         runtime_config,
-                        compensator,
+                        plan,
+                        gravity_model,
                         plan.vbus_request_period,
                         *logger,
                         diagnostic);
@@ -1335,11 +1519,17 @@ int main(int argc, char* argv[])
         }
 
         if (plan.final_hold_seconds > 0.0) {
+            const JointVector final_kp = plan.type == "gain_tuning"
+                ? plan.phases.back().kp
+                : base_kp;
+            const JointVector final_kd = plan.type == "gain_tuning"
+                ? plan.phases.back().kd
+                : base_kd;
             const Phase final_hold = makeHoldPhase(
                 "final_hold",
                 previous,
-                base_kp,
-                base_kd,
+                final_kp,
+                final_kd,
                 plan.final_hold_seconds,
                 plan.startup_gravity_scale);
             runTrajectory(
@@ -1350,7 +1540,8 @@ int main(int argc, char* argv[])
                 final_hold.kd,
                 driver,
                 runtime_config,
-                compensator,
+                plan,
+                gravity_model,
                 plan.vbus_request_period,
                 *logger,
                 diagnostic);

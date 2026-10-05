@@ -31,6 +31,45 @@ def sample_std(values):
     )
 
 
+def percentile(values, percent):
+    if not values:
+        return math.nan
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * percent / 100.0
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    fraction = position - lower
+    return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
+
+
+def sign_flip_percent(values, deadband=1e-9):
+    signs = []
+    for value in values:
+        if abs(value) <= deadband:
+            continue
+        signs.append(1 if value > 0.0 else -1)
+    if len(signs) < 2:
+        return 0.0
+    flips = sum(a != b for a, b in zip(signs, signs[1:]))
+    return 100.0 * flips / (len(signs) - 1)
+
+
+def settling_time(times, errors, amplitude):
+    if len(times) < 2 or len(errors) != len(times):
+        return math.nan
+    tolerance = max(math.radians(0.1), 0.05 * amplitude)
+    required_seconds = 0.2
+    for start in range(len(times)):
+        if (
+            times[-1] - times[start] >= required_seconds
+            and all(abs(value) <= tolerance for value in errors[start:])
+        ):
+            return times[start] - times[0]
+    return math.nan
+
+
 def yaml_string(value):
     escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
@@ -60,31 +99,68 @@ def phase_metrics(rows, joints):
     for phase, phase_rows in sorted(grouped.items()):
         joint_result = {}
         for joint in joints:
-            errors = [
-                value
-                for row in phase_rows
-                if (value := finite(row, f"{joint}.position_error_rad"))
-                is not None
-            ]
-            positions = [
-                value
-                for row in phase_rows
-                if (value := finite(row, f"{joint}.actual_position_rad"))
-                is not None
-            ]
+            samples = []
+            for row in phase_rows:
+                values = {
+                    "time": finite(row, "actual_time_us"),
+                    "error": finite(row, f"{joint}.position_error_rad"),
+                    "position": finite(row, f"{joint}.actual_position_rad"),
+                    "command": finite(row, f"{joint}.command_position_rad"),
+                    "velocity": finite(row, f"{joint}.actual_velocity_rad_s"),
+                    "torque": finite(row, f"{joint}.measured_torque_nm"),
+                    "d_torque": finite(row, f"{joint}.estimated_d_torque_nm"),
+                    "kp": finite(row, f"{joint}.kp"),
+                    "kd": finite(row, f"{joint}.kd"),
+                }
+                if all(values[key] is not None for key in (
+                    "time", "error", "position", "command"
+                )):
+                    samples.append(values)
+            errors = [sample["error"] for sample in samples]
+            positions = [sample["position"] for sample in samples]
+            commands = [sample["command"] for sample in samples]
+            times = [sample["time"] / 1e6 for sample in samples]
             velocities = [
-                value
-                for row in phase_rows
-                if (value := finite(row, f"{joint}.actual_velocity_rad_s"))
-                is not None
+                sample["velocity"]
+                for sample in samples
+                if sample["velocity"] is not None
             ]
             torques = [
-                value
-                for row in phase_rows
-                if (value := finite(row, f"{joint}.measured_torque_nm"))
-                is not None
+                sample["torque"]
+                for sample in samples
+                if sample["torque"] is not None
+            ]
+            d_torques = [
+                sample["d_torque"]
+                for sample in samples
+                if sample["d_torque"] is not None
+            ]
+            amplitude = (
+                abs(commands[-1] - positions[0])
+                if commands and positions
+                else math.nan
+            )
+            direction = (
+                1.0 if commands and positions and commands[-1] >= positions[0]
+                else -1.0
+            )
+            overshoot = (
+                max(
+                    0.0,
+                    max(direction * (value - commands[-1]) for value in positions),
+                )
+                if positions and commands
+                else math.nan
+            )
+            duration = times[-1] - times[0] if len(times) >= 2 else math.nan
+            velocity_reversals = sign_flip_percent(velocities, deadband=0.01)
+            d_torque_steps = [
+                abs(current - previous)
+                for previous, current in zip(d_torques, d_torques[1:])
             ]
             joint_result[joint] = {
+                "kp": next((sample["kp"] for sample in samples if sample["kp"] is not None), math.nan),
+                "kd": next((sample["kd"] for sample in samples if sample["kd"] is not None), math.nan),
                 "error_rms_deg": math.degrees(rms(errors)),
                 "error_peak_deg": (
                     math.degrees(max(abs(value) for value in errors))
@@ -96,8 +172,15 @@ def phase_metrics(rows, joints):
                     if len(positions) >= 2
                     else math.nan
                 ),
+                "overshoot_deg": math.degrees(overshoot),
+                "settling_time_s": settling_time(times, errors, amplitude),
                 "velocity_mean_rad_s": (
                     fmean(velocities) if velocities else math.nan
+                ),
+                "velocity_reversal_percent": velocity_reversals,
+                "velocity_peak_abs_rad_s": (
+                    max(abs(value) for value in velocities)
+                    if velocities else math.nan
                 ),
                 "torque_mean_nm": fmean(torques) if torques else math.nan,
                 "torque_std_nm": sample_std(torques),
@@ -106,6 +189,10 @@ def phase_metrics(rows, joints):
                     if torques
                     else math.nan
                 ),
+                "d_torque_std_nm": sample_std(d_torques),
+                "d_torque_step_p95_nm": percentile(d_torque_steps, 95.0),
+                "d_torque_sign_flip_percent": sign_flip_percent(d_torques),
+                "duration_s": duration,
             }
         result[phase] = {"samples": len(phase_rows), "joints": joint_result}
     return result
@@ -217,6 +304,140 @@ def evaluate_acceptance(global_result, phases, run_status, arguments):
     return checks, all(checks.values())
 
 
+def finite_mean(values):
+    usable = [value for value in values if math.isfinite(value)]
+    return fmean(usable) if usable else math.nan
+
+
+def tuning_recommendations(phases, joints):
+    recommendations = {}
+    for joint in joints:
+        gain_pairs = {
+            (phase["joints"][joint]["kp"], phase["joints"][joint]["kd"])
+            for phase in phases.values()
+            if math.isfinite(phase["joints"][joint]["kp"])
+            and math.isfinite(phase["joints"][joint]["kd"])
+        }
+        if len(gain_pairs) <= 1:
+            continue
+
+        candidates = []
+        for kp, kd in sorted(gain_pairs):
+            observations = [
+                phase["joints"][joint]
+                for phase in phases.values()
+                if phase["joints"][joint]["kp"] == kp
+                and phase["joints"][joint]["kd"] == kd
+            ]
+            aggregate = {
+                name: finite_mean([item[name] for item in observations])
+                for name in (
+                    "error_rms_deg",
+                    "error_peak_deg",
+                    "overshoot_deg",
+                    "settling_time_s",
+                    "velocity_reversal_percent",
+                    "d_torque_step_p95_nm",
+                    "d_torque_sign_flip_percent",
+                )
+            }
+            fallback_settling = finite_mean(
+                [item["duration_s"] for item in observations]
+            )
+            settling = aggregate["settling_time_s"]
+            if not math.isfinite(settling):
+                settling = 2.0 * fallback_settling
+            score = (
+                aggregate["error_rms_deg"]
+                + 0.25 * aggregate["error_peak_deg"]
+                + 0.35 * aggregate["overshoot_deg"]
+                + 0.25 * settling
+                + 0.01 * aggregate["velocity_reversal_percent"]
+                + 0.5 * aggregate["d_torque_step_p95_nm"]
+                + 0.005 * aggregate["d_torque_sign_flip_percent"]
+            )
+            safe = (
+                aggregate["error_peak_deg"] <= 2.0
+                and aggregate["d_torque_step_p95_nm"] <= 0.5
+                and math.isfinite(score)
+            )
+            candidates.append({
+                "kp": kp,
+                "kd": kd,
+                "score": score,
+                "safe": safe,
+                "observations": len(observations),
+                **aggregate,
+            })
+
+        eligible = [candidate for candidate in candidates if candidate["safe"]]
+        selected = min(eligible, key=lambda item: item["score"]) if eligible else None
+        recommendations[joint] = {
+            "selected": selected,
+            "candidates": candidates,
+        }
+    return recommendations
+
+
+def write_recommendations(path, recommendations):
+    with path.open("w") as output:
+        output.write("schema_version: 1\n")
+        output.write(
+            "selection_method: \"bounded heuristic; verify on hardware\"\n"
+        )
+        output.write("joints:\n")
+        if not recommendations:
+            output.write("  {}\n")
+            return
+        for joint, result in recommendations.items():
+            output.write(f"  {joint}:\n")
+            selected = result["selected"]
+            if selected is None:
+                output.write("    status: no_safe_candidate\n")
+                output.write("    recommended_kp: null\n")
+                output.write("    recommended_kd: null\n")
+            else:
+                output.write("    status: candidate_selected\n")
+                output.write(
+                    f"    recommended_kp: {yaml_number(selected['kp'])}\n"
+                )
+                output.write(
+                    f"    recommended_kd: {yaml_number(selected['kd'])}\n"
+                )
+                output.write(
+                    f"    score: {yaml_number(selected['score'])}\n"
+                )
+            output.write("    candidates:\n")
+            for candidate in result["candidates"]:
+                output.write(
+                    f"      - kp: {yaml_number(candidate['kp'])}\n"
+                )
+                output.write(
+                    f"        kd: {yaml_number(candidate['kd'])}\n"
+                )
+                output.write(
+                    f"        safe: {'true' if candidate['safe'] else 'false'}\n"
+                )
+                output.write(
+                    f"        score: {yaml_number(candidate['score'])}\n"
+                )
+                output.write(
+                    f"        observations: {candidate['observations']}\n"
+                )
+                for name in (
+                    "error_rms_deg",
+                    "error_peak_deg",
+                    "overshoot_deg",
+                    "settling_time_s",
+                    "velocity_reversal_percent",
+                    "d_torque_step_p95_nm",
+                    "d_torque_sign_flip_percent",
+                ):
+                    output.write(
+                        f"        {name}: {yaml_number(candidate[name])}\n"
+                    )
+
+
 def write_summary(
     path, global_result, phases, run_status, checks, accepted
 ):
@@ -287,7 +508,11 @@ def main():
         checks,
         accepted,
     )
+    recommendations = tuning_recommendations(phases, joints)
+    recommendation_path = arguments.run_directory / "recommended_gains.yaml"
+    write_recommendations(recommendation_path, recommendations)
     print(f"Summary saved: {output_path}")
+    print(f"Gain recommendation saved: {recommendation_path}")
     print(f"Accepted: {'yes' if accepted else 'no'}")
 
 
